@@ -6,6 +6,10 @@ import { Suspense, useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
 import Studio from "./Studio";
 
+// Scratch objects reused across balls/frames - avoids per-frame GC churn in useFrame.
+const _axis = new THREE.Vector3();
+const _quat = new THREE.Quaternion();
+
 // Per-frame render data written by the physics loop (CSS pixels, screen space).
 export type BallRender = {
   x: number;
@@ -56,9 +60,9 @@ function FlagBall({
     m.scale.setScalar(Math.max(0.001, d.r));
     const len = Math.hypot(d.dx, d.dy);
     if (len > 1e-5) {
-      const axis = new THREE.Vector3(-d.dy / len, -d.dx / len, 0);
-      const dRoll = ((d.dist - prev.current) / Math.max(1, d.r)) * 1.0;
-      m.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, dRoll));
+      _axis.set(-d.dy / len, -d.dx / len, 0);
+      const dRoll = (d.dist - prev.current) / Math.max(1, d.r);
+      m.quaternion.premultiply(_quat.setFromAxisAngle(_axis, dRoll));
     }
     prev.current = d.dist;
   });
@@ -98,9 +102,9 @@ function CueBall({ index, data }: { index: number; data: RefObject<BallRender[]>
     m.scale.setScalar(Math.max(0.001, d.r));
     const len = Math.hypot(d.dx, d.dy);
     if (len > 1e-5) {
-      const axis = new THREE.Vector3(-d.dy / len, -d.dx / len, 0);
-      const dRoll = ((d.dist - prev.current) / Math.max(1, d.r)) * 1.0;
-      m.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, dRoll));
+      _axis.set(-d.dy / len, -d.dx / len, 0);
+      const dRoll = (d.dist - prev.current) / Math.max(1, d.r);
+      m.quaternion.premultiply(_quat.setFromAxisAngle(_axis, dRoll));
     }
     prev.current = d.dist;
   });
