@@ -222,7 +222,7 @@ export default function PoolTable() {
   const onDown = useCallback((e: React.PointerEvent) => {
     sound.unlock();
     if (wonRef.current || !allStopped(ballsRef.current)) return;
-    (e.target as Element).setPointerCapture?.(e.pointerId);
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     aimRef.current.active = true;
     setAiming(true);
   }, []);
@@ -277,18 +277,24 @@ export default function PoolTable() {
         </div>
       </div>
 
-      {/* Table stack */}
-      <div ref={wrapRef} className="absolute inset-0 z-10">
+      {/* Table stack. Pointer handlers live on the WRAPPER, not the felt canvas:
+          the r3f WebGL layer sits on top, so real touches/clicks land on it first -
+          putting the handlers here catches the bubbled event whichever layer is hit,
+          and touch-action:none stops the browser stealing the drag as a scroll. */}
+      <div
+        ref={wrapRef}
+        className="absolute inset-0 z-10 touch-none"
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerCancel={onUp}
+      >
         <canvas
           ref={feltRef}
           width={Math.round(dims.w * dpr)}
           height={Math.round(dims.h * dpr)}
           style={{ width: dims.w, height: dims.h }}
-          className="absolute inset-0 touch-none"
-          onPointerDown={onDown}
-          onPointerMove={onMove}
-          onPointerUp={onUp}
-          onPointerCancel={onUp}
+          className="pointer-events-none absolute inset-0 touch-none"
         />
         {dims.w > 0 && <PoolBalls skins={game.skins} data={renderRef} />}
       </div>
