@@ -22,7 +22,7 @@ export const POCKET_R = 4.8;
 export const RAIL_BOUNCE = 0.86;
 export const FRICTION = 1.9; // higher = balls stop sooner
 export const STOP_EPS = 0.35; // below this speed a ball is parked
-export const MAX_SHOT = 260; // cap on launch speed (table units / s)
+export const MAX_SHOT = 1300; // cap on launch speed (table units / s)
 
 // The 6 pockets: 4 corners + 2 side pockets at the long-rail midpoints.
 export const POCKETS: { x: number; y: number }[] = [
