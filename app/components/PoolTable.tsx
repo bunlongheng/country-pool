@@ -11,6 +11,7 @@ import {
   TABLE,
   aimPath,
   allStopped,
+  predictHit,
   rack,
   shoot,
   stepWorld,
@@ -23,6 +24,9 @@ const PoolBalls = dynamic(() => import("./PoolBalls"), { ssr: false });
 
 const OBJECT_BALLS = 15;
 const MAX_DRAG = 190; // px of pull for full power
+// Reserved HUD bands (px) above and below the felt so nothing ever overlaps the table.
+const HUD_TOP = 52;
+const HUD_BOTTOM = 50;
 
 type Transform = { ox: number; oy: number; scale: number };
 
@@ -83,6 +87,14 @@ export default function PoolTable() {
   const potsShotRef = useRef(0);
   const wonRef = useRef(false);
   const [portrait, setPortrait] = useState(false);
+  const [kids, setKids] = useState(false);
+  const kidsRef = useRef(false);
+  const toggleKids = useCallback(() => {
+    sound.unlock();
+    const v = !kidsRef.current;
+    kidsRef.current = v;
+    setKids(v);
+  }, []);
 
   const muted = useSyncExternalStore(
     (cb) => sound.subscribe(cb),
@@ -125,11 +137,14 @@ export default function PoolTable() {
   }, []);
 
   const transform = useMemo<Transform>(() => {
-    const margin = Math.max(20, Math.min(dims.w, dims.h) * 0.07);
-    const scale = Math.min((dims.w - margin * 2) / TABLE.w, (dims.h - margin * 2) / TABLE.h);
+    // Table lives between the reserved top/bottom HUD bands, so the felt stays clean.
+    const availH = Math.max(1, dims.h - HUD_TOP - HUD_BOTTOM);
+    const marginX = Math.max(8, dims.w * 0.02);
+    const marginY = Math.max(6, availH * 0.04);
+    const scale = Math.min((dims.w - marginX * 2) / TABLE.w, (availH - marginY * 2) / TABLE.h);
     const s = Math.max(0.001, scale);
     const ox = (dims.w - TABLE.w * s) / 2;
-    const oy = (dims.h - TABLE.h * s) / 2;
+    const oy = HUD_TOP + (availH - TABLE.h * s) / 2;
     return { ox, oy, scale: s };
   }, [dims]);
   useEffect(() => {
@@ -227,7 +242,7 @@ export default function PoolTable() {
         r.sunk = b.sunk;
       }
 
-      drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving);
+      drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -296,37 +311,8 @@ export default function PoolTable() {
 
   return (
     <div className="relative h-full w-full overflow-hidden" style={{ background: "var(--room)" }}>
-      {/* Ornate gold title */}
-      <div className="pointer-events-none absolute inset-x-0 top-[max(6px,env(safe-area-inset-top))] z-20 flex flex-col items-center">
-        <h1 className="title-gold font-display text-3xl font-bold leading-none tracking-tight sm:text-4xl">
-          Country Pool
-        </h1>
-        <div className="mt-0.5 text-[10px] tracking-[0.4em] text-[#d9b25a]/80">★ ★ ★</div>
-      </div>
-
-      {/* Player card (top-left) */}
-      <div className="absolute left-2 top-[max(8px,env(safe-area-inset-top))] z-20 flex items-center gap-2 rounded-full bg-black/45 py-1 pl-1 pr-3 ring-1 ring-[#d9b25a]/30 backdrop-blur">
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[#2b8a76] to-[#0e4a42] text-base ring-1 ring-[#d9b25a]/50">
-          🌍
-        </div>
-        <div className="leading-tight">
-          <div className="text-[12px] font-semibold text-white">Player</div>
-          <div className="text-[11px] font-bold text-[#e8c266]">🏆 {best}</div>
-        </div>
-      </div>
-
-      {/* Rack progress (top-right) */}
-      <div className="absolute right-2 top-[max(8px,env(safe-area-inset-top))] z-20 flex items-center gap-2 rounded-full bg-black/45 py-1 pl-3 pr-1 ring-1 ring-[#d9b25a]/30 backdrop-blur">
-        <div className="leading-tight text-right">
-          <div className="text-[10px] uppercase tracking-widest text-white/55">Rack</div>
-          <div className="text-[12px] font-bold text-white">{potted}/{OBJECT_BALLS}</div>
-        </div>
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[#3a2a14] to-black text-base ring-1 ring-[#d9b25a]/50">
-          🎱
-        </div>
-      </div>
-
-      {/* Table stack. Handlers on the wrapper so the drag works over the WebGL layer. */}
+      {/* Table stack sits between the HUD bands. Handlers on the wrapper so the drag
+          works over the WebGL layer. */}
       <div
         ref={wrapRef}
         className="absolute inset-0 z-10 touch-none"
@@ -345,86 +331,101 @@ export default function PoolTable() {
         {dims.w > 0 && <PoolBalls skins={game.skins} data={renderRef} />}
       </div>
 
-      {/* Vertical power meter (left) */}
-      <div className="pointer-events-none absolute left-2 top-1/2 z-20 flex -translate-y-1/2 flex-col items-center gap-1 sm:left-3">
-        <div className="font-display text-sm font-bold text-white">{pct}%</div>
-        <div
-          className="relative h-36 w-3.5 overflow-hidden rounded-full ring-1 ring-black/50 sm:h-44"
-          style={{
-            background: "linear-gradient(180deg,#5be36a 0%,#e8d24d 45%,#ff8a3c 72%,#ff4a44 100%)",
-            opacity: aiming ? 1 : 0.5,
-          }}
-        >
-          {/* dim mask above the current power level */}
-          <div
-            className="absolute inset-x-0 top-0 bg-black/60 transition-[height] duration-75"
-            style={{ height: `${100 - pct}%` }}
-          />
-          {/* marker */}
-          <div
-            className="absolute -left-1 -right-1 h-0.5 bg-white shadow transition-[bottom] duration-75"
-            style={{ bottom: `calc(${pct}% - 1px)` }}
-          />
+      {/* TOP HUD band - above the felt, so it never covers the table */}
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-2 pl-[max(10px,env(safe-area-inset-left))] pr-[max(10px,env(safe-area-inset-right))]"
+        style={{ height: HUD_TOP, paddingTop: "env(safe-area-inset-top)" }}
+      >
+        <span className="title-gold shrink-0 font-display text-base font-bold leading-none sm:text-lg">
+          Country&nbsp;Pool
+        </span>
+
+        {/* Center slot: idle hint before the first shot, otherwise the power meter */}
+        <div className="flex min-w-0 flex-1 items-center justify-center gap-2">
+          {!aiming && shots === 0 ? (
+            <span className="truncate text-[12px] font-medium text-white/65 sm:text-[13px]">
+              Pull back from the cue ball, aim, release
+            </span>
+          ) : (
+            <>
+              <span className="hidden text-[11px] font-bold uppercase tracking-widest text-white/55 sm:inline">
+                {power < 0.34 ? "Soft" : power < 0.7 ? "Firm" : "Power"}
+              </span>
+              <div
+                className="relative h-2.5 w-32 overflow-hidden rounded-full ring-1 ring-black/50 sm:w-48"
+                style={{
+                  background: "linear-gradient(90deg,#5be36a 0%,#e8d24d 50%,#ff8a3c 74%,#ff4a44 100%)",
+                  opacity: aiming ? 1 : 0.5,
+                }}
+              >
+                <div className="absolute inset-y-0 right-0 bg-black/65" style={{ width: `${100 - pct}%` }} />
+              </div>
+              <span className="w-9 text-right font-display text-sm font-bold text-white">{pct}%</span>
+            </>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1.5 rounded-full bg-black/40 px-2.5 py-1 ring-1 ring-[#d9b25a]/30">
+          <span className="text-sm">🎱</span>
+          <span className="text-[12px] font-bold text-white">
+            {potted}/{OBJECT_BALLS}
+          </span>
         </div>
       </div>
 
-      {/* Right control rail (real controls only) */}
-      <div className="absolute right-2 top-1/2 z-20 flex -translate-y-1/2 flex-col items-center gap-3 sm:right-3">
-        <RailButton label="Sound" onClick={() => { sound.unlock(); sound.toggle(); }}>
-          {muted ? (
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
-          ) : (
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-          )}
-        </RailButton>
-        <RailButton label="Rack" onClick={resetGame}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
-        </RailButton>
-      </div>
-
-      {/* Bottom stats bar */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center pb-[max(6px,env(safe-area-inset-bottom))]">
-        <div className="flex items-center gap-3 rounded-t-2xl border-x border-t border-[#d9b25a]/25 bg-black/55 px-4 py-1.5 backdrop-blur sm:gap-5 sm:px-6">
-          <div className="text-center">
-            <div className="text-[9px] uppercase tracking-widest text-white/45">Break</div>
-            <div className="font-display text-lg font-bold leading-none text-[#e8c266]">{run}</div>
-          </div>
-          <div className="flex max-w-[34vw] items-center gap-1 overflow-hidden">
+      {/* BOTTOM HUD band - below the felt */}
+      <div
+        className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-2 pl-[max(10px,env(safe-area-inset-left))] pr-[max(10px,env(safe-area-inset-right))]"
+        style={{ height: HUD_BOTTOM, paddingBottom: "env(safe-area-inset-bottom)" }}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <Chip label="Break" value={run} accent />
+          <div className="flex max-w-[24vw] items-center gap-1 overflow-hidden">
             {pottedCodes.slice(-6).map((code, i) => (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 key={code + i}
                 src={`/flags/${code}.png`}
                 alt=""
-                className="h-6 w-6 shrink-0 rounded-full object-cover ring-1 ring-white/40"
+                className="h-5 w-5 shrink-0 rounded-full object-cover ring-1 ring-white/40"
               />
             ))}
             {pottedCodes.length > 6 && (
               <span className="text-[11px] font-semibold text-white/60">+{pottedCodes.length - 6}</span>
             )}
           </div>
-          <div className="text-center">
-            <div className="text-[9px] uppercase tracking-widest text-white/45">Score</div>
-            <div className="title-gold font-display text-2xl font-bold leading-none">{score}</div>
-          </div>
-          <div className="text-center">
-            <div className="text-[9px] uppercase tracking-widest text-white/45">Best</div>
-            <div className="font-display text-lg font-bold leading-none text-white">{best}</div>
-          </div>
+        </div>
+
+        <div className="shrink-0 text-center">
+          <div className="text-[8px] uppercase tracking-widest text-white/45">Score</div>
+          <div className="title-gold font-display text-2xl font-bold leading-none">{score}</div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Chip label="Best" value={best} />
+          <IconBtn onClick={toggleKids} active={kids} title="Kids mode - show where the ball will go">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /><circle cx="12" cy="12" r="2.4" /></svg>
+          </IconBtn>
+          <IconBtn onClick={() => { sound.unlock(); sound.toggle(); }} title="Sound">
+            {muted ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" /><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /></svg>
+            )}
+          </IconBtn>
+          <IconBtn onClick={resetGame} title="New rack">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
+          </IconBtn>
         </div>
       </div>
 
-      {/* Idle hint */}
-      {!aiming && !won && shots === 0 && (
-        <div className="pointer-events-none absolute bottom-16 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/40 px-4 py-1.5 text-center text-[13px] font-medium text-white/75 backdrop-blur-sm">
-          Pull back from the cue ball, aim, release to break
-        </div>
-      )}
-
-      {/* Rotate hint on portrait */}
+      {/* Rotate hint on portrait (kept off the felt, in the top band area) */}
       {portrait && (
-        <div className="pointer-events-none absolute left-1/2 top-14 z-20 -translate-x-1/2 rounded-full bg-[#d9b25a]/90 px-3 py-1.5 text-xs font-semibold text-[#231a08] shadow-lg">
-          Rotate for the full table
+        <div
+          className="pointer-events-none absolute left-1/2 z-30 -translate-x-1/2 rounded-full bg-[#d9b25a]/95 px-3 py-1 text-xs font-semibold text-[#231a08] shadow-lg"
+          style={{ top: HUD_TOP + 6 }}
+        >
+          Rotate to landscape for the full table
         </div>
       )}
 
@@ -451,21 +452,41 @@ export default function PoolTable() {
   );
 }
 
-function RailButton({
-  label,
+function Chip({ label, value, accent }: { label: string; value: string | number; accent?: boolean }) {
+  return (
+    <div className="shrink-0 rounded-lg bg-black/40 px-2.5 py-0.5 text-center ring-1 ring-white/10">
+      <div className={`font-display text-base font-bold leading-none ${accent ? "text-[#e8c266]" : "text-white"}`}>
+        {value}
+      </div>
+      <div className="text-[8px] uppercase tracking-widest text-white/45">{label}</div>
+    </div>
+  );
+}
+
+function IconBtn({
   onClick,
   children,
+  active,
+  title,
 }: {
-  label: string;
   onClick: () => void;
   children: React.ReactNode;
+  active?: boolean;
+  title?: string;
 }) {
   return (
-    <button onClick={onClick} className="flex flex-col items-center gap-1 active:scale-95">
-      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-b from-[#26201a] to-black text-white/85 ring-1 ring-[#d9b25a]/40 shadow-lg">
-        {children}
-      </span>
-      <span className="text-[9px] uppercase tracking-widest text-white/55">{label}</span>
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      aria-pressed={active}
+      className={`flex h-9 w-9 items-center justify-center rounded-full shadow ring-1 transition active:scale-95 ${
+        active
+          ? "bg-[#5be36a] text-[#0a2a12] ring-[#5be36a]"
+          : "bg-gradient-to-b from-[#26201a] to-black text-white/85 ring-[#d9b25a]/40"
+      }`}
+    >
+      {children}
     </button>
   );
 }
@@ -487,6 +508,7 @@ function drawFelt(
   balls: Ball[],
   aim: { active: boolean; dirX: number; dirY: number; power: number },
   moving: boolean,
+  kids: boolean,
 ) {
   if (!canvas.width || !canvas.height) return; // not sized yet (avoids non-finite gradients)
   const rectW = canvas.getBoundingClientRect().width;
@@ -599,13 +621,20 @@ function drawFelt(
     ctx.fill();
   }
 
-  // Aim guide: white dotted line + green target reticle + cue stick.
+  // Aim guide: dotted line + target marker + cue stick. Kids mode adds a ghost ball
+  // at the contact point and an arrow for the struck ball's direction.
   const cue = balls.find((b) => b.isCue);
   if (cue && !cue.sunk && aim.active && !moving) {
-    const pts = aimPath(cue.x, cue.y, aim.dirX, aim.dirY, TABLE.w * (0.4 + aim.power * 0.9), 1);
-    // Walk the polyline placing evenly spaced dots.
-    const step = scale * 3.2;
-    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    const hit = kids ? predictHit(cue.x, cue.y, aim.dirX, aim.dirY, balls) : null;
+    const reach = hit
+      ? Math.hypot(hit.contactX - cue.x, hit.contactY - cue.y)
+      : TABLE.w * (0.4 + aim.power * 0.9);
+    const pts = aimPath(cue.x, cue.y, aim.dirX, aim.dirY, reach, hit ? 0 : 1);
+
+    // Walk the polyline placing evenly spaced dots (green + bolder in kids mode).
+    const dotCol = kids ? "rgba(126,240,150,0.98)" : "rgba(255,255,255,0.92)";
+    const dotR = Math.max(1, scale * (kids ? 0.62 : 0.5));
+    const step = scale * (kids ? 2.8 : 3.2);
     let carry = BALL_R * scale + step;
     for (let i = 1; i < pts.length; i++) {
       const ax = px(pts[i - 1].x), ay = py(pts[i - 1].y);
@@ -614,25 +643,69 @@ function drawFelt(
       let d = carry;
       while (d < segLen) {
         const t = d / segLen;
-        dot(ctx, ax + (bx - ax) * t, ay + (by - ay) * t, Math.max(1, scale * 0.5), "rgba(255,255,255,0.92)");
+        dot(ctx, ax + (bx - ax) * t, ay + (by - ay) * t, dotR, dotCol);
         d += step;
       }
       carry = d - segLen;
     }
-    // Green target reticle at the end.
-    const end = pts[pts.length - 1];
-    ctx.strokeStyle = "rgba(90,235,120,0.95)";
-    ctx.lineWidth = Math.max(1.5, scale * 0.5);
-    ctx.shadowColor = "rgba(90,235,120,0.8)";
-    ctx.shadowBlur = 10;
-    ctx.beginPath();
-    ctx.arc(px(end.x), py(end.y), BALL_R * scale, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
+
+    if (hit) {
+      // Ghost cue ball at the contact point.
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = Math.max(1.4, scale * 0.5);
+      ctx.beginPath();
+      ctx.arc(px(hit.contactX), py(hit.contactY), BALL_R * scale, 0, Math.PI * 2);
+      ctx.stroke();
+      // Arrow showing where the struck ball will travel.
+      const tx = px(hit.target.x), ty = py(hit.target.y);
+      const alen = BALL_R * scale * 3.4;
+      drawArrow(ctx, tx, ty, tx + hit.dirX * alen, ty + hit.dirY * alen, "rgba(255,210,80,0.98)", scale);
+      ctx.restore();
+    } else {
+      // Green target reticle at the end (normal mode).
+      const end = pts[pts.length - 1];
+      ctx.strokeStyle = "rgba(90,235,120,0.95)";
+      ctx.lineWidth = Math.max(1.5, scale * 0.5);
+      ctx.shadowColor = "rgba(90,235,120,0.8)";
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.arc(px(end.x), py(end.y), BALL_R * scale, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
 
     // Cue stick behind the ball, pulled back with power.
     drawCue(ctx, px(cue.x), py(cue.y), -aim.dirX, -aim.dirY, aim.power, scale);
   }
+}
+
+function drawArrow(
+  ctx: CanvasRenderingContext2D,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  color: string,
+  scale: number,
+) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = Math.max(1.6, scale * 0.6);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  const ang = Math.atan2(y2 - y1, x2 - x1);
+  const h = Math.max(4, scale * 1.7);
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - h * Math.cos(ang - 0.42), y2 - h * Math.sin(ang - 0.42));
+  ctx.lineTo(x2 - h * Math.cos(ang + 0.42), y2 - h * Math.sin(ang + 0.42));
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 }
 
 function drawCue(

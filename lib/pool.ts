@@ -217,6 +217,47 @@ export function aimPath(
   return pts;
 }
 
+// Kids-mode aim aid: fire a ray from the cue centre along the shot direction and
+// find the first object ball it would strike. Returns the contact point (where the
+// cue centre sits at impact), the struck ball, and the direction that ball is pushed
+// (the classic "ghost ball" aid). Pure geometry - ignores cushions and later balls.
+export function predictHit(
+  cx: number,
+  cy: number,
+  dirX: number,
+  dirY: number,
+  balls: Ball[],
+): { contactX: number; contactY: number; target: Ball; dirX: number; dirY: number } | null {
+  const len = Math.hypot(dirX, dirY) || 1;
+  const dx = dirX / len;
+  const dy = dirY / len;
+  const sum = BALL_R * 2;
+  let bestT = Infinity;
+  let best: Ball | null = null;
+  for (const b of balls) {
+    if (b.sunk || b.isCue) continue;
+    const lx = b.x - cx;
+    const ly = b.y - cy;
+    const tca = lx * dx + ly * dy;
+    if (tca < 0) continue; // behind the aim
+    const d2 = lx * lx + ly * ly - tca * tca;
+    if (d2 > sum * sum) continue; // ray misses this ball
+    const t = tca - Math.sqrt(sum * sum - d2); // first contact along the ray
+    if (t < 0) continue;
+    if (t < bestT) {
+      bestT = t;
+      best = b;
+    }
+  }
+  if (!best) return null;
+  const contactX = cx + dx * bestT;
+  const contactY = cy + dy * bestT;
+  const nx = best.x - contactX;
+  const ny = best.y - contactY;
+  const nl = Math.hypot(nx, ny) || 1;
+  return { contactX, contactY, target: best, dirX: nx / nl, dirY: ny / nl };
+}
+
 // Rack: cue ball on the head spot, 15 flag balls in the classic triangle at the foot.
 export function rack(countryIndices: number[]): Ball[] {
   const balls: Ball[] = [];

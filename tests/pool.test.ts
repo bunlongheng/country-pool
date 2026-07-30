@@ -6,6 +6,7 @@ import {
   MAX_SHOT,
   allStopped,
   aimPath,
+  predictHit,
   rack,
   shoot,
   stepWorld,
@@ -87,6 +88,21 @@ test("aimPath starts at the cue and reflects off a cushion", () => {
   assert.ok(Math.abs(pts[0].x - (TABLE.w - 20)) < 1e-9 && Math.abs(pts[0].y - 50) < 1e-9);
   const maxX = Math.max(...pts.map((p) => p.x));
   assert.ok(maxX <= TABLE.w - BALL_R + 1e-6, "never crosses the rail");
+});
+
+test("predictHit finds the ball dead ahead and points it straight on", () => {
+  const target = cue({ id: 1, ci: 2, isCue: false, x: 80, y: 50 });
+  const other = cue({ id: 2, ci: 3, isCue: false, x: 80, y: 20 });
+  const hit = predictHit(20, 50, 1, 0, [target, other]);
+  assert.ok(hit, "should find a hit");
+  assert.equal(hit!.target.id, 1); // the one in the aim line
+  assert.ok(hit!.contactX < target.x, "contact is before the ball centre");
+  assert.ok(hit!.dirX > 0.99, "a centre-ball hit pushes it straight ahead");
+});
+
+test("predictHit returns null when the aim line misses every ball", () => {
+  const target = cue({ id: 1, ci: 2, isCue: false, x: 80, y: 90 });
+  assert.equal(predictHit(20, 10, 1, 0, [target]), null);
 });
 
 test("rack lays out 1 cue + 15 object balls, all on the table", () => {
