@@ -75,7 +75,8 @@ export default function PoolTable() {
 
   const [score, setScore] = useState(0);
   const [potted, setPotted] = useState(0);
-  const [pottedCodes, setPottedCodes] = useState<string[]>([]);
+  const [pottedCodes, setPottedCodes] = useState<{ id: number; code: string }[]>([]);
+  const pottedListRef = useRef<{ id: number; code: string }[]>([]); // pot-order, for the tray
   const [shots, setShots] = useState(0);
   const [run, setRun] = useState(0); // current break (consecutive pots)
   const [best, setBest] = useState(readBest);
@@ -109,6 +110,7 @@ export default function PoolTable() {
     runRef.current = 0;
     potsShotRef.current = 0;
     wonRef.current = false;
+    pottedListRef.current = [];
     setScore(0);
     setPotted(0);
     setPottedCodes([]);
@@ -137,15 +139,19 @@ export default function PoolTable() {
   }, []);
 
   const transform = useMemo<Transform>(() => {
-    // Table lives between the reserved top/bottom HUD bands, so the felt stays clean.
-    const availH = Math.max(1, dims.h - HUD_TOP - HUD_BOTTOM);
-    const marginX = Math.max(8, dims.w * 0.02);
-    const marginY = Math.max(6, availH * 0.04);
-    const scale = Math.min((dims.w - marginX * 2) / TABLE.w, (availH - marginY * 2) / TABLE.h);
-    const s = Math.max(0.001, scale);
-    const ox = (dims.w - TABLE.w * s) / 2;
-    const oy = HUD_TOP + (availH - TABLE.h * s) / 2;
-    return { ox, oy, scale: s };
+    // The felt lives between the reserved HUD bands. drawFelt paints a wooden rail of
+    // ~13*scale beyond the table on every side, so fit the WHOLE footprint (table +
+    // frame) - otherwise the rail and bolts clip off-screen (was chopped on iPad).
+    const region = Math.max(1, dims.h - HUD_TOP - HUD_BOTTOM);
+    const pad = 16; // breathing room + covers the 16px rail floor at small scales
+    const FRAME = 26; // rail units reserved on both axes (13 per side)
+    const scale = Math.max(
+      0.001,
+      Math.min((dims.w - pad * 2) / (TABLE.w + FRAME), (region - pad * 2) / (TABLE.h + FRAME)),
+    );
+    const ox = (dims.w - TABLE.w * scale) / 2;
+    const oy = HUD_TOP + (region - TABLE.h * scale) / 2;
+    return { ox, oy, scale };
   }, [dims]);
   useEffect(() => {
     trRef.current = transform;
@@ -188,6 +194,7 @@ export default function PoolTable() {
             pottedRef.current += 1;
             scoreRef.current += 1;
             potsShotRef.current += 1;
+            pottedListRef.current.push({ id: b.id, code: COUNTRIES[b.ci].code });
           }
         }
       }
@@ -214,7 +221,7 @@ export default function PoolTable() {
         }
         setScore(scoreRef.current);
         setPotted(pottedRef.current);
-        setPottedCodes(balls.filter((b) => b.sunk && !b.isCue).map((b) => COUNTRIES[b.ci].code));
+        setPottedCodes([...pottedListRef.current]);
         setRun(runRef.current);
         setBest(bestRef.current);
         if (pottedRef.current >= OBJECT_BALLS && !wonRef.current) {
@@ -380,19 +387,10 @@ export default function PoolTable() {
       >
         <div className="flex min-w-0 items-center gap-2">
           <Chip label="Break" value={run} accent />
-          <div className="flex max-w-[24vw] items-center gap-1 overflow-hidden">
-            {pottedCodes.slice(-6).map((code, i) => (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                key={code + i}
-                src={`/flags/${code}.png`}
-                alt=""
-                className="h-5 w-5 shrink-0 rounded-full object-cover ring-1 ring-white/40"
-              />
+          <div className="flex max-w-[44vw] items-center gap-1 overflow-hidden pl-0.5">
+            {pottedCodes.slice(-10).map(({ id, code }) => (
+              <PottedBall key={id} code={code} />
             ))}
-            {pottedCodes.length > 6 && (
-              <span className="text-[11px] font-semibold text-white/60">+{pottedCodes.length - 6}</span>
-            )}
           </div>
         </div>
 
@@ -449,6 +447,28 @@ export default function PoolTable() {
         </div>
       )}
     </div>
+  );
+}
+
+// A potted country ball in the tray - a glossy sphere matching the WebGL balls on the
+// felt, that rolls in from the right when it drops (fresh mount = fresh CSS animation).
+function PottedBall({ code }: { code: string }) {
+  return (
+    <span
+      className="relative h-6 w-6 shrink-0 overflow-hidden rounded-full shadow-md ring-1 ring-black/50"
+      style={{ animation: "cp-roll-in 0.6s cubic-bezier(.34,1.15,.5,1) both" }}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={`/flags/${code}.png`} alt="" className="absolute inset-0 h-full w-full object-cover" />
+      {/* Spherical highlight (top-left) + shading (bottom-right) = the 3D ball look. */}
+      <span
+        className="pointer-events-none absolute inset-0 rounded-full"
+        style={{
+          background:
+            "radial-gradient(circle at 34% 26%, rgba(255,255,255,.8) 0%, rgba(255,255,255,.2) 16%, rgba(255,255,255,0) 40%), radial-gradient(circle at 70% 80%, rgba(0,0,0,.5) 0%, rgba(0,0,0,0) 55%)",
+        }}
+      />
+    </span>
   );
 }
 

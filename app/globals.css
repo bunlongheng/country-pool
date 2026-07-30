@@ -38,6 +38,21 @@ body {
   font-optical-sizing: auto;
 }
 
+/* A potted ball rolling into the tray from the right side. */
+@keyframes cp-roll-in {
+  0% {
+    transform: translateX(190%) rotate(340deg);
+    opacity: 0;
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(0) rotate(0deg);
+    opacity: 1;
+  }
+}
+
 /* Ornate gold gradient text for the title + score. */
 .title-gold {
   background: linear-gradient(180deg, #fbeaa8 0%, #e8c266 46%, #b8862f 100%);
