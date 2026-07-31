@@ -60,17 +60,30 @@ function substep(balls: Ball[], dt: number, ev: StepEvents): void {
     }
   }
 
-  // Pockets: a ball whose centre falls inside a pocket mouth drops.
+  // Pockets: a ball whose centre falls inside a pocket mouth drops. Corners are
+  // generous (a ball rolling down the rail into a corner is a real shot, and it keeps
+  // the ball in bounds). Side pockets face INTO the table, so a ball skimming parallel
+  // to the long rail must roll past - it only drops if actually heading into the mouth.
+  const sideX = TABLE.w / 2;
   for (const b of balls) {
     if (b.sunk) continue;
     for (const p of POCKETS) {
-      if (Math.hypot(b.x - p.x, b.y - p.y) < POCKET_R) {
-        b.sunk = true;
-        b.vx = 0;
-        b.vy = 0;
-        ev.pocketed.push(b.id);
-        break;
+      const d = Math.hypot(b.x - p.x, b.y - p.y);
+      if (d >= POCKET_R) continue;
+      if (p.x === sideX) {
+        const sp = Math.hypot(b.vx, b.vy);
+        const dy = p.y - b.y;
+        // A side pocket faces INTO the table: entering the mouth means moving toward
+        // the rail (the y direction), not skimming along it. Rail-parallel balls have
+        // ~no y-velocity, so they roll past unless deep in the throat or nearly stopped.
+        const intoMouth = (b.vy * dy) / (sp * (Math.abs(dy) || 1));
+        if (sp > STOP_EPS * 2 && d > POCKET_R * 0.45 && intoMouth < 0.5) continue;
       }
+      b.sunk = true;
+      b.vx = 0;
+      b.vy = 0;
+      ev.pocketed.push(b.id);
+      break;
     }
   }
 

@@ -66,6 +66,28 @@ test("a ball rolled into a corner pocket is sunk", () => {
   assert.ok(b.sunk);
 });
 
+test("a ball skimming parallel to the rail rolls PAST the side pocket (not sunk)", () => {
+  // Rolling straight along the top rail toward the far end, level with the side pocket.
+  const b = cue({ x: TABLE.w * 0.2, y: BALL_R, vx: 140, vy: 0 });
+  const dt = 1 / 240;
+  let sunk = false;
+  for (let i = 0; i < 240 * 4 && !sunk; i++) {
+    if (stepWorld([b], dt).pocketed.includes(0)) sunk = true;
+  }
+  assert.ok(!sunk, "a rail-parallel skim must not drop into the side pocket");
+});
+
+test("a ball aimed into the side pocket drops", () => {
+  // Sitting just inside the mouth of the top side pocket, driven straight at it.
+  const b = cue({ x: TABLE.w / 2, y: 14, vx: 0, vy: -120 });
+  const dt = 1 / 240;
+  let sunk = false;
+  for (let i = 0; i < 240 * 2 && !sunk; i++) {
+    if (stepWorld([b], dt).pocketed.includes(0)) sunk = true;
+  }
+  assert.ok(sunk, "a ball driven into the side pocket should drop");
+});
+
 test("head-on elastic collision transfers momentum (cue stops, target moves)", () => {
   const a = cue({ x: 40, y: 50, vx: 60, vy: 0 });
   const target = cue({ id: 1, ci: 3, isCue: false, x: 40 + BALL_R * 2 + 0.05, y: 50 });

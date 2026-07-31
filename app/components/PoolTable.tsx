@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import dynamic from "next/dynamic";
 import { COUNTRIES } from "../data/countries";
+import { SURFACES, surfaceByKey, type Surface } from "../data/surfaces";
 import { sound } from "@/lib/sound";
 import {
   BALL_R,
@@ -27,6 +28,21 @@ const MAX_DRAG = 190; // px of pull for full power
 // Reserved HUD bands (px) above and below the felt so nothing ever overlaps the table.
 const HUD_TOP = 52;
 const HUD_BOTTOM = 50;
+const FLASH_DUR = 0.72; // seconds a pocket blinks green (2 pulses) after a ball drops
+
+// The pocket index closest to a point - which hole a dropped ball fell into.
+function nearestPocket(x: number, y: number): number {
+  let bi = 0;
+  let bd = Infinity;
+  for (let i = 0; i < POCKETS.length; i++) {
+    const d = Math.hypot(x - POCKETS[i].x, y - POCKETS[i].y);
+    if (d < bd) {
+      bd = d;
+      bi = i;
+    }
+  }
+  return bi;
+}
 
 type Transform = { ox: number; oy: number; scale: number };
 
@@ -52,6 +68,9 @@ function buildRack(): { balls: Ball[]; skins: BallSkin[] } {
 const readBest = () =>
   typeof window !== "undefined" ? Number(window.localStorage?.getItem("cp-best") || 0) : 0;
 
+const readSurface = () =>
+  typeof window !== "undefined" ? window.localStorage?.getItem("cp-surface") || "pool" : "pool";
+
 export default function PoolTable() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const feltRef = useRef<HTMLCanvasElement>(null);
@@ -72,6 +91,20 @@ export default function PoolTable() {
   });
   const [power, setPower] = useState(0);
   const [aiming, setAiming] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [surfaceKey, setSurfaceKey] = useState(readSurface);
+  const surfaceRef = useRef<Surface>(surfaceByKey(surfaceKey));
+  const pocketFlashRef = useRef<number[]>(POCKETS.map(() => 0)); // per-pocket blink timer
+
+  const pickSurface = useCallback((key: string) => {
+    sound.unlock();
+    setSurfaceKey(key);
+    surfaceRef.current = surfaceByKey(key);
+    try {
+      window.localStorage?.setItem("cp-surface", key);
+    } catch {}
+  }, []);
 
   const [score, setScore] = useState(0);
   const [potted, setPotted] = useState(0);
@@ -111,6 +144,8 @@ export default function PoolTable() {
     potsShotRef.current = 0;
     wonRef.current = false;
     pottedListRef.current = [];
+    pocketFlashRef.current = POCKETS.map(() => 0);
+    setConfirmReset(false);
     setScore(0);
     setPotted(0);
     setPottedCodes([]);
@@ -187,6 +222,7 @@ export default function PoolTable() {
         for (const id of ev.pocketed) {
           const b = balls.find((x) => x.id === id);
           if (!b) continue;
+          pocketFlashRef.current[nearestPocket(b.x, b.y)] = FLASH_DUR;
           if (b.isCue) {
             sound.scratch();
           } else {
@@ -249,7 +285,10 @@ export default function PoolTable() {
         r.sunk = b.sunk;
       }
 
-      drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current);
+      const flash = pocketFlashRef.current;
+      for (let i = 0; i < flash.length; i++) if (flash[i] > 0) flash[i] = Math.max(0, flash[i] - dt);
+
+      drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, surfaceRef.current);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -401,6 +440,9 @@ export default function PoolTable() {
 
         <div className="flex shrink-0 items-center gap-1.5">
           <Chip label="Best" value={best} />
+          <IconBtn onClick={() => { sound.unlock(); setShowSettings(true); }} active={showSettings} title="Table surface">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+          </IconBtn>
           <IconBtn onClick={toggleKids} active={kids} title="Kids mode - show where the ball will go">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /><circle cx="12" cy="12" r="2.4" /></svg>
           </IconBtn>
@@ -411,7 +453,7 @@ export default function PoolTable() {
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /></svg>
             )}
           </IconBtn>
-          <IconBtn onClick={resetGame} title="New rack">
+          <IconBtn onClick={() => { sound.unlock(); setConfirmReset(true); }} title="New rack">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
           </IconBtn>
         </div>
@@ -424,6 +466,69 @@ export default function PoolTable() {
           style={{ top: HUD_TOP + 6 }}
         >
           Rotate to landscape for the full table
+        </div>
+      )}
+
+      {/* Surface picker */}
+      {showSettings && (
+        <div
+          className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-5 bg-black/70 px-6 backdrop-blur-md"
+          onClick={() => setShowSettings(false)}
+        >
+          <div className="title-gold font-display text-3xl font-bold sm:text-4xl">Table Surface</div>
+          <div
+            className="grid grid-cols-4 gap-2.5 sm:gap-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {SURFACES.map((s) => {
+              const active = s.key === surfaceKey;
+              return (
+                <button
+                  key={s.key}
+                  onClick={() => pickSurface(s.key)}
+                  className={`flex h-20 w-20 flex-col items-center justify-center gap-1 rounded-2xl ring-1 transition active:scale-95 sm:h-24 sm:w-24 ${
+                    active
+                      ? "bg-[#5be36a] text-[#0a2a12] ring-[#5be36a] shadow-lg"
+                      : "bg-gradient-to-b from-[#26201a] to-black text-white/85 ring-[#d9b25a]/40"
+                  }`}
+                  style={{ boxShadow: active ? undefined : `inset 0 -20px 24px -18px ${s.felt[0]}` }}
+                >
+                  <span className="text-2xl leading-none sm:text-3xl">{s.emoji}</span>
+                  <span className="text-[10px] font-bold leading-tight sm:text-xs">{s.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <button
+            onClick={() => setShowSettings(false)}
+            className="rounded-full bg-white/10 px-7 py-2.5 font-display text-base font-semibold text-white ring-1 ring-white/25 transition active:scale-95"
+          >
+            Done
+          </button>
+        </div>
+      )}
+
+      {/* Reset confirmation */}
+      {confirmReset && (
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-5 bg-black/70 px-6 backdrop-blur-md">
+          <div className="title-gold font-display text-3xl font-bold sm:text-4xl">New Rack?</div>
+          <p className="max-w-xs text-center text-sm text-white/70">
+            This clears the current game, score and break. Your best break is kept.
+          </p>
+          <div className="flex gap-3">
+            <button
+              onClick={() => setConfirmReset(false)}
+              className="rounded-full bg-white/10 px-7 py-3 font-display text-lg font-semibold text-white ring-1 ring-white/25 transition active:scale-95"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={resetGame}
+              className="rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-7 py-3 font-display text-lg font-bold text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
+            >
+              New Rack
+            </button>
+          </div>
         </div>
       )}
 
@@ -529,6 +634,8 @@ function drawFelt(
   aim: { active: boolean; dirX: number; dirY: number; power: number },
   moving: boolean,
   kids: boolean,
+  flash: number[],
+  surface: Surface,
 ) {
   if (!canvas.width || !canvas.height) return; // not sized yet (avoids non-finite gradients)
   const rectW = canvas.getBoundingClientRect().width;
@@ -589,24 +696,17 @@ function drawFelt(
     py(TABLE.h / 2),
     scale * TABLE.w * 0.62,
   );
-  felt.addColorStop(0, "#2b8a76");
-  felt.addColorStop(0.68, "#17685c");
-  felt.addColorStop(1, "#0d443d");
+  felt.addColorStop(0, surface.felt[0]);
+  felt.addColorStop(0.68, surface.felt[1]);
+  felt.addColorStop(1, surface.felt[2]);
   roundRect(ctx, px(0), py(0), TABLE.w * scale, TABLE.h * scale, scale * 2);
   ctx.fillStyle = felt;
   ctx.fill();
   ctx.save();
   ctx.clip();
 
-  // Head string + spots.
-  ctx.strokeStyle = "rgba(255,255,255,0.08)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(px(TABLE.w * 0.25), py(0));
-  ctx.lineTo(px(TABLE.w * 0.25), py(TABLE.h));
-  ctx.stroke();
-  dot(ctx, px(TABLE.w * 0.25), py(TABLE.h / 2), 2, "rgba(255,255,255,0.16)");
-  dot(ctx, px(TABLE.w * 0.7), py(TABLE.h / 2), 2, "rgba(255,255,255,0.16)");
+  // Sport-specific markings for the chosen surface.
+  surface.draw({ ctx, px, py, scale });
 
   // Ball shadows (grounding for the 3D layer).
   for (const b of balls) {
@@ -623,8 +723,9 @@ function drawFelt(
   }
   ctx.restore();
 
-  // Pockets: dark mouth + polished gold jaw.
-  for (const p of POCKETS) {
+  // Pockets: dark mouth + polished gold jaw. A freshly-used pocket blinks green twice.
+  for (let i = 0; i < POCKETS.length; i++) {
+    const p = POCKETS[i];
     const cx = px(p.x);
     const cy = py(p.y);
     const jaw = ctx.createRadialGradient(cx, cy, POCKET_R * scale * 0.5, cx, cy, POCKET_R * scale * 1.15);
@@ -639,6 +740,19 @@ function drawFelt(
     ctx.arc(cx, cy, POCKET_R * scale * 0.72, 0, Math.PI * 2);
     ctx.fillStyle = "#080808";
     ctx.fill();
+    const f = flash[i];
+    if (f > 0) {
+      const a = Math.abs(Math.sin((1 - f / FLASH_DUR) * Math.PI * 2)); // 2 pulses
+      ctx.save();
+      ctx.strokeStyle = `rgba(74,235,120,${0.95 * a})`;
+      ctx.shadowColor = `rgba(74,235,120,${a})`;
+      ctx.shadowBlur = 16 * a + 3;
+      ctx.lineWidth = Math.max(2, scale * 0.9);
+      ctx.beginPath();
+      ctx.arc(cx, cy, POCKET_R * scale * 0.95, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // Aim guide: dotted line + target marker + cue stick. Kids mode adds a ghost ball
