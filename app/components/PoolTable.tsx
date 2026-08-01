@@ -260,7 +260,6 @@ export default function PoolTable() {
         setScore(scoreRef.current);
         setPotted(pottedRef.current);
         setPottedCodes([...pottedListRef.current]);
-        setRun(runRef.current);
         setBest(bestRef.current);
         if (pottedRef.current >= OBJECT_BALLS && !wonRef.current) {
           wonRef.current = true;
