@@ -31,6 +31,7 @@ const HUD_TOP = 40;
 const HUD_BOTTOM = 44;
 const FLASH_DUR = 0.72; // seconds a pocket blinks green (2 pulses) after a ball drops
 const CUE_FLASH_DUR = 0.55; // seconds the cue ball blinks white (1 pulse) after a respawn
+let REDUCE_MOTION = false; // set from matchMedia; skips the canvas fire for motion-sensitive users
 
 // The pocket index closest to a point - which hole a dropped ball fell into.
 function nearestPocket(x: number, y: number): number {
@@ -128,11 +129,13 @@ export default function PoolTable() {
   const railRef = useRef<RailMaterial | null>(railByKey(railKey));
   const pocketFlashRef = useRef<number[]>(POCKETS.map(() => 0)); // per-pocket blink timer
   const cueFlashRef = useRef(0); // cue-ball white blink timer (set on respawn)
+  const dirtyRef = useRef(true); // request one felt repaint next frame (settings/resize/settle)
 
   const pickCloth = useCallback((key: string) => {
     sound.unlock();
     setClothKey(key);
     clothRef.current = clothFor(key);
+    dirtyRef.current = true;
     try {
       window.localStorage?.setItem("cp-cloth", key);
     } catch {}
@@ -142,6 +145,7 @@ export default function PoolTable() {
     sound.unlock();
     setRailKey(key);
     railRef.current = railByKey(key);
+    dirtyRef.current = true;
     try {
       window.localStorage?.setItem("cp-rail", key);
     } catch {}
@@ -151,6 +155,7 @@ export default function PoolTable() {
     sound.unlock();
     setSurfaceKey(key);
     surfaceRef.current = surfaceByKey(key);
+    dirtyRef.current = true;
     try {
       window.localStorage?.setItem("cp-surface", key);
     } catch {}
@@ -164,7 +169,6 @@ export default function PoolTable() {
   const [won, setWon] = useState(false);
   const pottedRef = useRef(0);
   const deathsRef = useRef(0);
-  const potsShotRef = useRef(0);
   const wonRef = useRef(false);
   const [portrait, setPortrait] = useState(false);
   const [kids, setKids] = useState(false);
@@ -173,6 +177,7 @@ export default function PoolTable() {
     sound.unlock();
     const v = !kidsRef.current;
     kidsRef.current = v;
+    dirtyRef.current = true;
     setKids(v);
   }, []);
 
@@ -186,7 +191,6 @@ export default function PoolTable() {
     sound.unlock();
     pottedRef.current = 0;
     deathsRef.current = 0;
-    potsShotRef.current = 0;
     wonRef.current = false;
     pottedListRef.current = [];
     pocketFlashRef.current = POCKETS.map(() => 0);
@@ -196,6 +200,7 @@ export default function PoolTable() {
     setShots(0);
     setDeaths(0);
     setWon(false);
+    dirtyRef.current = true;
     setGame(buildRack());
   }, []);
 
@@ -247,7 +252,32 @@ export default function PoolTable() {
   }, [dims]);
   useEffect(() => {
     trRef.current = transform;
+    dirtyRef.current = true; // resize/orientation -> repaint the felt
   }, [transform]);
+
+  // Motion-sensitivity: skip the canvas fire when the user prefers reduced motion.
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const set = () => {
+      REDUCE_MOTION = mq.matches;
+    };
+    set();
+    mq.addEventListener("change", set);
+    return () => mq.removeEventListener("change", set);
+  }, []);
+
+  // Escape closes the Settings / New-rack dialogs.
+  useEffect(() => {
+    if (!showSettings && !confirmReset) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setShowSettings(false);
+        setConfirmReset(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showSettings, confirmReset]);
 
   // ---- The one animation loop: physics + sound + felt draw + render feed ----
   useEffect(() => {
@@ -286,13 +316,13 @@ export default function PoolTable() {
           } else {
             sound.pocket();
             pottedRef.current += 1;
-            potsShotRef.current += 1;
             pottedListRef.current.push({ id: b.id, code: COUNTRIES[b.ci].code });
           }
         }
       }
       // Transition moving -> stopped: settle the turn.
       if (wasMoving && !moving) {
+        dirtyRef.current = true; // one final repaint of the resting table
         const cue = balls.find((b) => b.isCue);
         if (cue && cue.sunk) {
           cue.sunk = false; // respot the cue on the head spot
@@ -336,7 +366,15 @@ export default function PoolTable() {
       }
       if (cueFlashRef.current > 0) cueFlashRef.current = Math.max(0, cueFlashRef.current - dt);
 
-      drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, surfaceRef.current, cueFlashRef.current, clothRef.current, railRef.current);
+      // Only repaint the felt when something is actually changing (balls moving, aiming,
+      // a pocket/cue flash live) or a one-off redraw was requested (settings, resize,
+      // settle). At idle this skips ~25 gradient allocations + a layout read per frame.
+      const anyFlash = cueFlashRef.current > 0 || flash.some((f) => f !== 0);
+      const active = moving || aimRef.current.active || anyFlash;
+      if (active || dirtyRef.current) {
+        drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, surfaceRef.current, cueFlashRef.current, clothRef.current, railRef.current);
+        if (!active) dirtyRef.current = false;
+      }
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -387,10 +425,10 @@ export default function PoolTable() {
     if (!a.active) return;
     a.active = false;
     setAiming(false);
+    dirtyRef.current = true; // clear the aim guide/cue after release
     if (a.power > 0.04) {
       const cue = ballsRef.current.find((b) => b.isCue);
       if (cue) {
-        potsShotRef.current = 0;
         shoot(cue, a.dirX, a.dirY, a.power);
         sound.cue(a.power);
         setShots((s) => s + 1);
@@ -410,6 +448,8 @@ export default function PoolTable() {
       <div
         ref={wrapRef}
         className="absolute inset-0 z-10 touch-none"
+        role="application"
+        aria-label="Pool table - drag back from the cue ball to aim and release to shoot"
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
@@ -456,7 +496,7 @@ export default function PoolTable() {
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5 rounded-full bg-black/40 px-2.5 py-1 ring-1 ring-[#d9b25a]/30">
-          <span className="text-sm">🎱</span>
+          <span className="text-sm" aria-hidden="true">🎱</span>
           <span className="text-[12px] font-bold text-white">
             {potted}/{OBJECT_BALLS}
           </span>
@@ -475,7 +515,7 @@ export default function PoolTable() {
         </div>
 
         <div className="shrink-0 text-center">
-          <div className="text-[8px] uppercase tracking-widest text-white/45">Shots</div>
+          <div className="text-[10px] uppercase tracking-widest text-white/60">Shots</div>
           <div className="title-gold font-display text-2xl font-bold leading-none">{shots}</div>
         </div>
 
@@ -513,6 +553,9 @@ export default function PoolTable() {
       {/* Surface picker */}
       {showSettings && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Settings"
           className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-5 bg-black/70 px-6 backdrop-blur-md"
           onClick={() => setShowSettings(false)}
         >
@@ -589,7 +632,7 @@ export default function PoolTable() {
 
       {/* Reset confirmation */}
       {confirmReset && (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-5 bg-black/70 px-6 backdrop-blur-md">
+        <div role="dialog" aria-modal="true" aria-label="New rack confirmation" className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-5 bg-black/70 px-6 backdrop-blur-md">
           <div className="title-gold font-display text-3xl font-bold sm:text-4xl">New Rack?</div>
           <p className="max-w-xs text-center text-sm text-white/70">
             This starts a fresh rack and resets your shots and deaths.
@@ -613,7 +656,7 @@ export default function PoolTable() {
 
       {/* Win overlay */}
       {won && (
-        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-black/70 backdrop-blur-md">
+        <div role="dialog" aria-modal="true" aria-label="Rack cleared" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-black/70 backdrop-blur-md">
           <div className="title-gold font-display text-5xl font-bold tracking-tight sm:text-7xl">
             Rack Cleared
           </div>
@@ -661,7 +704,7 @@ function Chip({ label, value, accent }: { label: string; value: string | number;
       <div className={`font-display text-base font-bold leading-none ${accent ? "text-[#e8c266]" : "text-white"}`}>
         {value}
       </div>
-      <div className="text-[8px] uppercase tracking-widest text-white/45">{label}</div>
+      <div className="text-[10px] uppercase tracking-widest text-white/60">{label}</div>
     </div>
   );
 }
@@ -938,7 +981,7 @@ function drawFelt(
     }
 
     // Near max power: fire + smoke billow out behind the cue ball like a thruster.
-    if (aim.power > 0.9) drawFire(ctx, px(cue.x), py(cue.y), -aim.dirX, -aim.dirY, aim.power, scale);
+    if (aim.power > 0.9 && !REDUCE_MOTION) drawFire(ctx, px(cue.x), py(cue.y), -aim.dirX, -aim.dirY, aim.power, scale);
 
     // Cue stick behind the ball, pulled back with power.
     drawCue(ctx, px(cue.x), py(cue.y), -aim.dirX, -aim.dirY, aim.power, scale);

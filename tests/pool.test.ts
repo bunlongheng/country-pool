@@ -2,12 +2,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   BALL_R,
+  POCKET_R,
+  SIDE_RECESS,
+  BASE_BALL_R,
+  BASE_POCKET_R,
+  BASE_SIDE_RECESS,
   TABLE,
   MAX_SHOT,
   allStopped,
   aimPath,
   predictHit,
   rack,
+  setBallSize,
   shoot,
   stepWorld,
   type Ball,
@@ -134,5 +140,36 @@ test("rack lays out 1 cue + 15 object balls, all on the table", () => {
   assert.equal(balls.filter((b) => !b.isCue).length, 15);
   for (const b of balls) {
     assert.ok(b.x > 0 && b.x < TABLE.w && b.y > 0 && b.y < TABLE.h, `ball ${b.id} off table`);
+  }
+});
+
+test("setBallSize scales ball fully, pocket at 0.7x, clamps, and keeps pockets > balls", () => {
+  try {
+    setBallSize(2);
+    assert.ok(Math.abs(BALL_R - BASE_BALL_R * 2) < 1e-9, `BALL_R=${BALL_R}`);
+    assert.ok(Math.abs(POCKET_R - BASE_POCKET_R * (1 + (2 - 1) * 0.7)) < 1e-9, `POCKET_R=${POCKET_R}`);
+    assert.ok(Math.abs(SIDE_RECESS - BASE_SIDE_RECESS * (1 + (2 - 1) * 0.7)) < 1e-9, `SIDE_RECESS=${SIDE_RECESS}`);
+    assert.ok(POCKET_R > BALL_R, "pocket must stay larger than the ball so it can drop");
+    setBallSize(99); // clamps to 3
+    assert.ok(Math.abs(BALL_R - BASE_BALL_R * 3) < 1e-9, `clamped BALL_R=${BALL_R}`);
+  } finally {
+    setBallSize(1); // reset the shared global for other tests
+  }
+});
+
+test("resizable balls still pot: cue driven into the top-left corner drops at every size", () => {
+  for (const f of [1.5, 2, 2.5]) {
+    try {
+      setBallSize(f);
+      const b = cue({ x: TABLE.w * 0.5, y: 50 });
+      shoot(b, -b.x, -b.y, 1);
+      let sunk = false;
+      for (let i = 0; i < 60 * 10 && !sunk; i++) {
+        if (stepWorld([b], 1 / 60).pocketed.includes(0)) sunk = true;
+      }
+      assert.ok(sunk, `corner pot should drop at size ${f}`);
+    } finally {
+      setBallSize(1);
+    }
   }
 });

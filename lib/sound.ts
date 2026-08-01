@@ -1,6 +1,8 @@
-// Tiny Web Audio sound engine for Country Pool. Everything is synthesised at
-// runtime, so the game ships zero audio files - no CDN, no licensing, the CSP
-// stays 'self'. Every call is wrapped so audio can never throw or break play.
+// Sound engine for Country Pool. The sound EFFECTS (cue, clicks, rail, pocket, scratch,
+// win) are synthesised at runtime with Web Audio - no SFX files. The background music is
+// a single local file (public/theme.mp3) played through a native <audio> element, served
+// same-origin so the CSP stays 'self'. Every call is wrapped so audio can never throw or
+// break play, and the mute toggle silences both the synth and the theme.
 
 const STORE_KEY = "cp-muted";
 

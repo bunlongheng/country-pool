@@ -47,12 +47,12 @@ export const POCKETS: { x: number; y: number }[] = [
 // Scale ball + pocket sizes together (the pocket/ball ratio is preserved so potting
 // still works) and reposition the recessed side pockets. Physics, the rack, cushions
 // and rendering all read these live bindings, so one call resizes the whole game
-// consistently. factor 1 = default; the UI offers ~1 / 1.5 / 2 (Normal / Big / Huge).
+// consistently. factor 1 = default (tests); the UI offers 1.5 / 2 / 2.5 (Normal / Big / Huge).
 export function setBallSize(factor: number): void {
   const f = Math.max(0.5, Math.min(3, factor));
-  // Pockets grow at HALF the ball's rate so big balls still drop, but the holes never
-  // balloon past the rail into cartoon territory. (pf stays comfortably above f-scaled
-  // ball radius: e.g. at f=2, BALL_R=5.1 vs POCKET_R=7.2.)
+  // Pockets grow at 0.7x the ball's rate so big balls still drop, but the holes never
+  // balloon past the rail into cartoon territory. (pf stays comfortably above the
+  // f-scaled ball radius: e.g. at f=2, BALL_R=5.1 vs POCKET_R=8.16.)
   const pf = 1 + (f - 1) * 0.7;
   BALL_R = BASE_BALL_R * f;
   POCKET_R = BASE_POCKET_R * pf;
