@@ -809,6 +809,9 @@ function drawFelt(
       ctx.shadowBlur = 0;
     }
 
+    // Near max power: fire + smoke billow out behind the cue ball like a thruster.
+    if (aim.power > 0.9) drawFire(ctx, px(cue.x), py(cue.y), -aim.dirX, -aim.dirY, aim.power, scale);
+
     // Cue stick behind the ball, pulled back with power.
     drawCue(ctx, px(cue.x), py(cue.y), -aim.dirX, -aim.dirY, aim.power, scale);
   }
@@ -839,6 +842,83 @@ function drawArrow(
   ctx.lineTo(x2 - h * Math.cos(ang + 0.42), y2 - h * Math.sin(ang + 0.42));
   ctx.closePath();
   ctx.fill();
+  ctx.restore();
+}
+
+// Fire + smoke behind the cue ball at high power. (bx,by) points BEHIND the ball
+// (away from the shot). Animated per-frame off performance.now(), fades in over the
+// top 10% of power. Additive blend for the flames, normal blend for the smoke.
+function drawFire(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  bx: number,
+  by: number,
+  power: number,
+  scale: number,
+) {
+  const intensity = Math.min(1, Math.max(0, (power - 0.9) / 0.1));
+  if (intensity <= 0) return;
+  const t = (typeof performance !== "undefined" ? performance.now() : 0) / 1000;
+  const R = BALL_R * scale;
+  const baseX = cx + bx * R * 1.05;
+  const baseY = cy + by * R * 1.05;
+  const perpX = -by;
+  const perpY = bx;
+
+  // Smoke first (normal blend, drifting further back), so flames sit on top.
+  ctx.save();
+  for (let i = 0; i < 5; i++) {
+    const drift = (t * 0.55 + i * 0.2) % 1;
+    const sx = baseX + bx * (R * 2.6 + drift * R * 5) + perpX * Math.sin(t * 3 + i * 1.3) * R * 1.3;
+    const sy = baseY + by * (R * 2.6 + drift * R * 5) + perpY * Math.sin(t * 3 + i * 1.3) * R * 1.3;
+    const rad = R * (0.9 + drift * 2);
+    const a = 0.22 * intensity * (1 - drift);
+    const sg = ctx.createRadialGradient(sx, sy, 0, sx, sy, rad);
+    sg.addColorStop(0, `rgba(110,110,115,${a})`);
+    sg.addColorStop(1, "rgba(90,90,95,0)");
+    ctx.fillStyle = sg;
+    ctx.beginPath();
+    ctx.arc(sx, sy, rad, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  // Hot core glow just behind the ball.
+  const gr = R * (2 + intensity);
+  const glow = ctx.createRadialGradient(baseX, baseY, 0, baseX, baseY, gr);
+  glow.addColorStop(0, `rgba(255,190,70,${0.55 * intensity})`);
+  glow.addColorStop(0.5, `rgba(255,90,20,${0.3 * intensity})`);
+  glow.addColorStop(1, "rgba(255,40,0,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(baseX, baseY, gr, 0, Math.PI * 2);
+  ctx.fill();
+  // Flickering flame tongues.
+  const flames = 5;
+  for (let i = 0; i < flames; i++) {
+    const off = (i - (flames - 1) / 2) / flames;
+    const flick = 0.6 + 0.4 * Math.sin(t * 17 + i * 1.9);
+    const len = R * (2.2 + intensity * 2.4) * flick;
+    const wob = Math.sin(t * 11 + i * 2.3) * R * 0.5;
+    const rootX = baseX + perpX * off * R * 2;
+    const rootY = baseY + perpY * off * R * 2;
+    const tipX = baseX + bx * len + perpX * (off * R * 2 + wob);
+    const tipY = baseY + by * len + perpY * (off * R * 2 + wob);
+    const fg = ctx.createLinearGradient(rootX, rootY, tipX, tipY);
+    fg.addColorStop(0, `rgba(255,245,170,${0.9 * intensity})`);
+    fg.addColorStop(0.5, `rgba(255,140,30,${0.7 * intensity})`);
+    fg.addColorStop(1, "rgba(200,30,0,0)");
+    ctx.fillStyle = fg;
+    ctx.beginPath();
+    ctx.moveTo(rootX + perpX * R * 0.55, rootY + perpY * R * 0.55);
+    ctx.quadraticCurveTo((rootX + tipX) / 2 + perpX * R, (rootY + tipY) / 2 + perpY * R, tipX, tipY);
+    ctx.quadraticCurveTo((rootX + tipX) / 2 - perpX * R, (rootY + tipY) / 2 - perpY * R, rootX - perpX * R * 0.55, rootY - perpY * R * 0.55);
+    ctx.closePath();
+    ctx.fill();
+  }
   ctx.restore();
 }
 

@@ -24,13 +24,17 @@ export const FRICTION = 1.9; // higher = balls stop sooner
 export const STOP_EPS = 0.35; // below this speed a ball is parked
 export const MAX_SHOT = 1300; // cap on launch speed (table units / s)
 
-// The 6 pockets: 4 corners + 2 side pockets at the long-rail midpoints.
+// The 6 pockets: 4 corners + 2 side pockets at the long-rail midpoints. The side
+// pockets are recessed back INTO the rail (their centre sits past the cushion line) so
+// a ball must be driven firmly and squarely to the rail to drop - a lazy straight roll
+// stops at the jaws instead of being swallowed.
+export const SIDE_RECESS = 2.2;
 export const POCKETS: { x: number; y: number }[] = [
   { x: 0, y: 0 },
-  { x: TABLE.w / 2, y: 0 },
+  { x: TABLE.w / 2, y: -SIDE_RECESS },
   { x: TABLE.w, y: 0 },
   { x: 0, y: TABLE.h },
-  { x: TABLE.w / 2, y: TABLE.h },
+  { x: TABLE.w / 2, y: TABLE.h + SIDE_RECESS },
   { x: TABLE.w, y: TABLE.h },
 ];
 
@@ -118,6 +122,21 @@ function substep(balls: Ball[], dt: number, ev: StepEvents): void {
         b.vy = -b.vy * RAIL_BOUNCE;
         ev.rails++;
       }
+    }
+  }
+
+  // Safety net: a ball that slipped through a recessed side-pocket mouth without
+  // dropping is bounced back onto the felt rather than lost off-table past the rail.
+  for (const b of balls) {
+    if (b.sunk) continue;
+    if (b.y < 0) {
+      b.y = BALL_R;
+      b.vy = Math.abs(b.vy) * RAIL_BOUNCE;
+      ev.rails++;
+    } else if (b.y > TABLE.h) {
+      b.y = TABLE.h - BALL_R;
+      b.vy = -Math.abs(b.vy) * RAIL_BOUNCE;
+      ev.rails++;
     }
   }
 
