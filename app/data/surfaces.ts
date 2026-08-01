@@ -133,8 +133,17 @@ export const SURFACES: Surface[] = [
       ring(g, 43, 50, 11);
       box(g, W - 43, 34, 38, 32);
       ring(g, W - 43, 50, 11);
-      arc(g, 12, 50, 42, -1.15, 1.15); // 3pt arcs
-      arc(g, W - 12, 50, 42, Math.PI - 1.15, Math.PI + 1.15);
+      // 3pt line: arc + straight corner segments that connect to the baseline.
+      const R3 = 42;
+      const a3 = 1.15;
+      const ex = Math.cos(a3) * R3;
+      const ey = Math.sin(a3) * R3;
+      arc(g, 12, 50, R3, -a3, a3);
+      line(g, 5, 50 - ey, 12 + ex, 50 - ey);
+      line(g, 5, 50 + ey, 12 + ex, 50 + ey);
+      arc(g, W - 12, 50, R3, Math.PI - a3, Math.PI + a3);
+      line(g, W - 5, 50 - ey, W - 12 - ex, 50 - ey);
+      line(g, W - 5, 50 + ey, W - 12 - ex, 50 + ey);
     },
   },
   {
@@ -252,6 +261,23 @@ export function railFor(key: string): RailMaterial {
   return RAILS[key] ?? WOOD;
 }
 
+// Selectable table (rail/frame) materials, independent of the sport. "auto" keeps each
+// surface's own material (e.g. leather for football); any other choice overrides it.
+export const RAIL_OPTIONS: { key: string; label: string; mat: RailMaterial | null }[] = [
+  { key: "auto", label: "Auto", mat: null },
+  { key: "wood", label: "Wood", mat: WOOD },
+  { key: "walnut", label: "Walnut", mat: WALNUT },
+  { key: "leather", label: "Leather", mat: LEATHER },
+  { key: "black", label: "Black", mat: BLACK },
+  { key: "metal", label: "Metal", mat: METAL },
+  { key: "aluminum", label: "Aluminum", mat: ALUMINUM },
+];
+
+// The chosen frame material, or null for "auto" (use the surface's own via railFor).
+export function railByKey(key: string): RailMaterial | null {
+  return RAIL_OPTIONS.find((r) => r.key === key)?.mat ?? null;
+}
+
 // ---- Cloth colours: popular pool-table felt shades, independent of the sport. Pick
 // "classic" to keep each surface's own felt (grass for soccer, etc.); any other choice
 // overrides the felt base colour while the sport markings still draw on top. ----
@@ -260,6 +286,7 @@ export type Cloth = { key: string; label: string; felt: [string, string, string]
 export const CLOTHS: Cloth[] = [
   { key: "classic", label: "Classic (per table)", felt: ["#2b8a76", "#17685c", "#0d443d"] },
   { key: "green", label: "Tournament Green", felt: ["#2f9c6a", "#1f7a52", "#124a33"] },
+  { key: "orange", label: "Hardwood Orange", felt: ["#e0913f", "#c06a24", "#7a3f14"] },
   { key: "blue", label: "Championship Blue", felt: ["#2f7fc4", "#1f5f9c", "#123a63"] },
   { key: "turquoise", label: "Dark Turquoise", felt: ["#1f9c94", "#137a72", "#0a4a45"] },
   { key: "red", label: "Burgundy Red", felt: ["#b0403f", "#8a2f2e", "#521a1a"] },

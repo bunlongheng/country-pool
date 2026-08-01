@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import dynamic from "next/dynamic";
 import { COUNTRIES } from "../data/countries";
-import { SURFACES, surfaceByKey, railFor, CLOTHS, clothFor, type Surface } from "../data/surfaces";
+import { SURFACES, surfaceByKey, railFor, RAIL_OPTIONS, railByKey, CLOTHS, clothFor, type Surface, type RailMaterial } from "../data/surfaces";
 import { sound } from "@/lib/sound";
 import {
   BALL_R,
@@ -82,9 +82,15 @@ const readBallSize = () =>
 const readCloth = () =>
   typeof window !== "undefined" ? window.localStorage?.getItem("cp-cloth") || "classic" : "classic";
 
-// Shared styling for the settings dropdowns.
-const SELECT_CLS =
-  "w-full appearance-none rounded-xl bg-gradient-to-b from-[#26201a] to-black px-4 py-2.5 font-display text-base font-bold text-white ring-1 ring-[#d9b25a]/40 outline-none focus:ring-[#d9b25a]";
+const readRail = () =>
+  typeof window !== "undefined" ? window.localStorage?.getItem("cp-rail") || "auto" : "auto";
+
+// Shared styling for a settings quick-tab button (active = green, else dark).
+const tabCls = (active: boolean) =>
+  "flex items-center gap-1.5 rounded-xl px-3 py-2 font-display text-sm font-bold ring-1 transition active:scale-95 " +
+  (active
+    ? "bg-[#5be36a] text-[#0a2a12] ring-[#5be36a] shadow-lg"
+    : "bg-gradient-to-b from-[#26201a] to-black text-white/85 ring-[#d9b25a]/40");
 
 export default function PoolTable() {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -118,6 +124,8 @@ export default function PoolTable() {
   const surfaceRef = useRef<Surface>(surfaceByKey(surfaceKey));
   const [clothKey, setClothKey] = useState(readCloth);
   const clothRef = useRef<[string, string, string] | null>(clothFor(clothKey));
+  const [railKey, setRailKey] = useState(readRail);
+  const railRef = useRef<RailMaterial | null>(railByKey(railKey));
   const pocketFlashRef = useRef<number[]>(POCKETS.map(() => 0)); // per-pocket blink timer
   const cueFlashRef = useRef(0); // cue-ball white blink timer (set on respawn)
 
@@ -127,6 +135,15 @@ export default function PoolTable() {
     clothRef.current = clothFor(key);
     try {
       window.localStorage?.setItem("cp-cloth", key);
+    } catch {}
+  }, []);
+
+  const pickRail = useCallback((key: string) => {
+    sound.unlock();
+    setRailKey(key);
+    railRef.current = railByKey(key);
+    try {
+      window.localStorage?.setItem("cp-rail", key);
     } catch {}
   }, []);
 
@@ -262,7 +279,7 @@ export default function PoolTable() {
         for (const id of ev.pocketed) {
           const b = balls.find((x) => x.id === id);
           if (!b) continue;
-          pocketFlashRef.current[nearestPocket(b.x, b.y)] = FLASH_DUR;
+          pocketFlashRef.current[nearestPocket(b.x, b.y)] = b.isCue ? -FLASH_DUR : FLASH_DUR; // scratch = red
           if (b.isCue) {
             sound.scratch();
             deathsRef.current += 1; // a scratch = a "death"
@@ -313,10 +330,13 @@ export default function PoolTable() {
       }
 
       const flash = pocketFlashRef.current;
-      for (let i = 0; i < flash.length; i++) if (flash[i] > 0) flash[i] = Math.max(0, flash[i] - dt);
+      for (let i = 0; i < flash.length; i++) {
+        if (flash[i] > 0) flash[i] = Math.max(0, flash[i] - dt);
+        else if (flash[i] < 0) flash[i] = Math.min(0, flash[i] + dt);
+      }
       if (cueFlashRef.current > 0) cueFlashRef.current = Math.max(0, cueFlashRef.current - dt);
 
-      drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, surfaceRef.current, cueFlashRef.current, clothRef.current);
+      drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, surfaceRef.current, cueFlashRef.current, clothRef.current, railRef.current);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -461,7 +481,6 @@ export default function PoolTable() {
 
         <div className="flex shrink-0 items-center gap-1.5">
           <Chip label="Died" value={deaths} accent />
-          <span className="text-base">💀</span>
           <IconBtn onClick={() => { sound.unlock(); setShowSettings(true); }} active={showSettings} title="Table surface">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
           </IconBtn>
@@ -499,33 +518,64 @@ export default function PoolTable() {
         >
           <div className="title-gold font-display text-3xl font-bold sm:text-4xl">Settings</div>
 
-          <div className="flex w-full max-w-xs flex-col gap-4" onClick={(e) => e.stopPropagation()}>
-            <label className="flex flex-col gap-1.5">
+          <div className="flex w-full max-w-md flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex flex-col gap-1.5">
               <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Ball Size</span>
-              <select value={ballSize} onChange={(e) => pickBallSize(Number(e.target.value))} className={SELECT_CLS}>
+              <div className="flex gap-2">
                 {BALL_SIZES.map((b) => (
-                  <option key={b.label} value={b.factor}>{b.label}</option>
+                  <button key={b.label} onClick={() => pickBallSize(b.factor)} className={tabCls(b.factor === ballSize) + " flex-1 justify-center"}>
+                    <span className="inline-block rounded-full bg-current" style={{ width: 5 + b.factor * 4, height: 5 + b.factor * 4 }} />
+                    {b.label}
+                  </button>
                 ))}
-              </select>
-            </label>
+              </div>
+            </div>
 
-            <label className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Table Style</span>
-              <select value={surfaceKey} onChange={(e) => pickSurface(e.target.value)} className={SELECT_CLS}>
+              <div className="grid grid-cols-4 gap-2">
                 {SURFACES.map((s) => (
-                  <option key={s.key} value={s.key}>{s.emoji}  {s.label}</option>
+                  <button key={s.key} onClick={() => pickSurface(s.key)} className={tabCls(s.key === surfaceKey) + " flex-col !gap-0.5 py-2"}>
+                    <span className="text-xl leading-none">{s.emoji}</span>
+                    <span className="text-[10px] leading-tight">{s.label}</span>
+                  </button>
                 ))}
-              </select>
-            </label>
+              </div>
+            </div>
 
-            <label className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Cloth Color</span>
-              <select value={clothKey} onChange={(e) => pickCloth(e.target.value)} className={SELECT_CLS}>
+              <div className="grid grid-cols-3 gap-2">
                 {CLOTHS.map((c) => (
-                  <option key={c.key} value={c.key}>{c.label}</option>
+                  <button key={c.key} onClick={() => pickCloth(c.key)} className={tabCls(c.key === clothKey)}>
+                    <span
+                      className="inline-block h-4 w-4 shrink-0 rounded-full ring-1 ring-white/30"
+                      style={{ background: `radial-gradient(circle at 35% 30%, ${c.felt[0]}, ${c.felt[2]})` }}
+                    />
+                    <span className="truncate text-[11px]">{c.label}</span>
+                  </button>
                 ))}
-              </select>
-            </label>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Table Frame</span>
+              <div className="grid grid-cols-4 gap-2">
+                {RAIL_OPTIONS.map((r) => (
+                  <button key={r.key} onClick={() => pickRail(r.key)} className={tabCls(r.key === railKey)}>
+                    <span
+                      className="inline-block h-4 w-4 shrink-0 rounded-full ring-1 ring-white/30"
+                      style={{
+                        background: r.mat
+                          ? `linear-gradient(145deg, ${r.mat.edge}, ${r.mat.frame[2]})`
+                          : "conic-gradient(#d9b25a, #8b929b, #4a3128, #d9b25a)",
+                      }}
+                    />
+                    <span className="truncate text-[11px]">{r.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           <button
@@ -666,6 +716,7 @@ function drawFelt(
   surface: Surface,
   cueFlash: number,
   cloth: [string, string, string] | null,
+  railOverride: RailMaterial | null,
 ) {
   if (!canvas.width || !canvas.height) return; // not sized yet (avoids non-finite gradients)
   const rectW = canvas.getBoundingClientRect().width;
@@ -678,7 +729,7 @@ function drawFelt(
   const px = (x: number) => ox + x * scale;
   const py = (y: number) => oy + y * scale;
   const rail = Math.max(16, 13 * scale);
-  const mat = railFor(surface.key); // themed frame material (wood / metal / leather ...)
+  const mat = railOverride ?? railFor(surface.key); // chosen frame material, else per-surface
 
   // Warm room glow behind the table.
   const glow = ctx.createRadialGradient(W / 2, H * 0.42, scale * 10, W / 2, H * 0.42, Math.max(W, H) * 0.7);
@@ -786,9 +837,9 @@ function drawFelt(
     const cx = px(p.x);
     const cy = py(p.y);
     const jaw = ctx.createRadialGradient(cx, cy, POCKET_R * scale * 0.5, cx, cy, POCKET_R * scale * 1.15);
-    jaw.addColorStop(0, "#f0d896");
-    jaw.addColorStop(0.6, "#c9992f");
-    jaw.addColorStop(1, "#7a5a1e");
+    jaw.addColorStop(0, mat.edge); // rim matches the chosen frame material
+    jaw.addColorStop(0.6, mat.frame[1]);
+    jaw.addColorStop(1, mat.frame[2]);
     ctx.beginPath();
     ctx.arc(cx, cy, POCKET_R * scale * 1.05, 0, Math.PI * 2);
     ctx.fillStyle = jaw;
@@ -798,11 +849,13 @@ function drawFelt(
     ctx.fillStyle = "#080808";
     ctx.fill();
     const f = flash[i];
-    if (f > 0) {
-      const a = Math.abs(Math.sin((1 - f / FLASH_DUR) * Math.PI * 2)); // 2 pulses
+    if (f !== 0) {
+      const mag = Math.abs(f);
+      const a = Math.abs(Math.sin((1 - mag / FLASH_DUR) * Math.PI * 2)); // 2 pulses
+      const col = f < 0 ? "255,60,45" : "74,235,120"; // scratch (cue) = red, pot = green
       ctx.save();
-      ctx.strokeStyle = `rgba(74,235,120,${0.95 * a})`;
-      ctx.shadowColor = `rgba(74,235,120,${a})`;
+      ctx.strokeStyle = `rgba(${col},${0.95 * a})`;
+      ctx.shadowColor = `rgba(${col},${a})`;
       ctx.shadowBlur = 16 * a + 3;
       ctx.lineWidth = Math.max(2, scale * 0.9);
       ctx.beginPath();
