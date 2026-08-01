@@ -4,12 +4,13 @@ Play pool where every ball is a glossy 3D country flag - a landscape-first billi
 
 ![Country Pool table with glossy 3D flag balls racked on emerald felt](docs/screenshots/rack.png)
 
+[![CI](https://github.com/bunlongheng/country-pool/actions/workflows/ci.yml/badge.svg)](https://github.com/bunlongheng/country-pool/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript)
 ![three.js](https://img.shields.io/badge/three.js-0.185-000000?logo=three.js)
-![Tests](https://img.shields.io/badge/tests-12%20passing-3fb950)
+![Tests](https://img.shields.io/badge/tests-14%20passing-3fb950)
 
 ## Contents
 
@@ -120,7 +121,7 @@ country-pool/
 ├── lib/
 │   ├── pool.ts              # pure physics core (unit-tested)
 │   └── sound.ts             # Web Audio synth + theme playback
-├── tests/pool.test.ts       # 12 node:test unit tests
+├── tests/pool.test.ts       # 14 node:test unit tests
 ├── public/
 │   ├── flags/               # 194 flag PNGs
 │   └── theme.mp3            # looping background theme

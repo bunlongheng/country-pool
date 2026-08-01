@@ -9,6 +9,7 @@ const STORE_KEY = "cp-muted";
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
 let muted = false;
+let lastShotPower = 0; // power (0..1) of the most recent shot, boosts knock/rail SFX
 const listeners = new Set<(m: boolean) => void>();
 
 if (typeof window !== "undefined") {
@@ -98,7 +99,7 @@ function startTheme() {
       theme = new Audio("/theme.mp3");
       theme.loop = true;
       theme.preload = "auto";
-      theme.volume = 0.55;
+      theme.volume = 0.28; // background theme sits well under the sound effects
     }
     theme.muted = muted;
     if (theme.paused) void theme.play().catch(() => {}); // ignore autoplay block
@@ -117,6 +118,7 @@ export const sound = {
   // 90% (fire mode) a deep boom + whoosh layer on so max power is unmistakably louder.
   cue(power = 1) {
     const p = Math.max(0, Math.min(1, power));
+    lastShotPower = p; // makes the resulting ball knocks + rail thuds scale with the shot
     const v = 0.18 + p * p * 1.05; // ~0.18 soft -> ~1.2 at full
     knock(0.05, 0.5 * v, 2200 + p * 900);
     tone({ type: "triangle", from: 180, to: 90, dur: 0.06, gain: 0.16 * v });
@@ -127,14 +129,17 @@ export const sound = {
       tone({ type: "square", from: 820, to: 200, dur: 0.14, gain: 0.12 * fire, delay: 0.01 }); // whoosh
     }
   },
-  // Ball-on-ball click. Loudness + pitch scale with impact speed (0..1-ish).
+  // Ball-on-ball click. Loudness + pitch scale with impact speed AND the power of the
+  // shot that caused it - so a hard break cracks loud and a fire-mode shot is loudest.
   click(impact: number) {
     const v = Math.max(0.06, Math.min(1, impact));
-    knock(0.04, 0.28 * v, 1500 + v * 2200);
+    const boost = 0.7 + lastShotPower * lastShotPower * 1.7; // ~0.7x soft -> ~2.4x at full power
+    knock(0.04, Math.min(0.9, 0.28 * v * boost), 1500 + v * 2200);
   },
-  // A cushion thud - duller and lower than a ball click.
+  // A cushion thud - duller and lower than a ball click; also swells with shot power.
   rail() {
-    knock(0.06, 0.16, 320);
+    const boost = 0.7 + lastShotPower * lastShotPower * 1.7;
+    knock(0.06, Math.min(0.6, 0.16 * boost), 320);
   },
   // A ball dropping into a pocket: click, then a hollow wooden roll-away.
   pocket() {

@@ -9,6 +9,8 @@ import Studio from "./Studio";
 // Scratch objects reused across balls/frames - avoids per-frame GC churn in useFrame.
 const _axis = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
+// One shared sphere geometry for all 16 balls (instead of 16 identical copies).
+const SPHERE = new THREE.SphereGeometry(1, 48, 48);
 
 // Per-frame render data written by the physics loop (CSS pixels, screen space).
 export type BallRender = {
@@ -69,7 +71,7 @@ function FlagBall({
 
   return (
     <mesh ref={ref} visible={false}>
-      <sphereGeometry args={[1, 48, 48]} />
+      <primitive object={SPHERE} attach="geometry" />
       <meshPhysicalMaterial
         map={tex}
         roughness={0.12}
@@ -111,7 +113,7 @@ function CueBall({ index, data }: { index: number; data: RefObject<BallRender[]>
 
   return (
     <mesh ref={ref} visible={false}>
-      <sphereGeometry args={[1, 48, 48]} />
+      <primitive object={SPHERE} attach="geometry" />
       <meshPhysicalMaterial
         color="#fdfdf6"
         roughness={0.08}
