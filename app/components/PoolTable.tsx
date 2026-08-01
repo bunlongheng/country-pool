@@ -29,6 +29,7 @@ const MAX_DRAG = 190; // px of pull for full power
 const HUD_TOP = 52;
 const HUD_BOTTOM = 50;
 const FLASH_DUR = 0.72; // seconds a pocket blinks green (2 pulses) after a ball drops
+const CUE_FLASH_DUR = 0.55; // seconds the cue ball blinks white (1 pulse) after a respawn
 
 // The pocket index closest to a point - which hole a dropped ball fell into.
 function nearestPocket(x: number, y: number): number {
@@ -96,6 +97,7 @@ export default function PoolTable() {
   const [surfaceKey, setSurfaceKey] = useState(readSurface);
   const surfaceRef = useRef<Surface>(surfaceByKey(surfaceKey));
   const pocketFlashRef = useRef<number[]>(POCKETS.map(() => 0)); // per-pocket blink timer
+  const cueFlashRef = useRef(0); // cue-ball white blink timer (set on respawn)
 
   const pickSurface = useCallback((key: string) => {
     sound.unlock();
@@ -111,7 +113,7 @@ export default function PoolTable() {
   const [pottedCodes, setPottedCodes] = useState<{ id: number; code: string }[]>([]);
   const pottedListRef = useRef<{ id: number; code: string }[]>([]); // pot-order, for the tray
   const [shots, setShots] = useState(0);
-  const [run, setRun] = useState(0); // current break (consecutive pots)
+  // Current break (consecutive pots) is tracked in runRef only - it feeds Best.
   const [best, setBest] = useState(readBest);
   const [won, setWon] = useState(false);
   const scoreRef = useRef(0);
@@ -150,7 +152,6 @@ export default function PoolTable() {
     setPotted(0);
     setPottedCodes([]);
     setShots(0);
-    setRun(0);
     setWon(false);
     setGame(buildRack());
   }, []);
@@ -243,6 +244,7 @@ export default function PoolTable() {
           cue!.x = TABLE.w * 0.25;
           cue!.y = TABLE.h / 2;
           cue!.vx = cue!.vy = 0;
+          cueFlashRef.current = CUE_FLASH_DUR; // blink the respawned cue ball white
           runRef.current = 0; // a scratch ends the break
         } else if (potsShotRef.current > 0) {
           runRef.current += potsShotRef.current; // continue the break
@@ -287,8 +289,9 @@ export default function PoolTable() {
 
       const flash = pocketFlashRef.current;
       for (let i = 0; i < flash.length; i++) if (flash[i] > 0) flash[i] = Math.max(0, flash[i] - dt);
+      if (cueFlashRef.current > 0) cueFlashRef.current = Math.max(0, cueFlashRef.current - dt);
 
-      drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, surfaceRef.current);
+      drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, surfaceRef.current, cueFlashRef.current);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -398,7 +401,7 @@ export default function PoolTable() {
                 {power < 0.34 ? "Soft" : power < 0.7 ? "Firm" : "Power"}
               </span>
               <div
-                className="relative h-2.5 w-32 overflow-hidden rounded-full ring-1 ring-black/50 sm:w-48"
+                className={`relative h-2.5 w-32 overflow-hidden rounded-full ring-1 ring-black/50 sm:w-48 ${power > 0.9 ? "cp-fire-blink" : ""}`}
                 style={{
                   background: "linear-gradient(90deg,#5be36a 0%,#e8d24d 50%,#ff8a3c 74%,#ff4a44 100%)",
                   opacity: aiming ? 1 : 0.5,
@@ -406,7 +409,7 @@ export default function PoolTable() {
               >
                 <div className="absolute inset-y-0 right-0 bg-black/65" style={{ width: `${100 - pct}%` }} />
               </div>
-              <span className="w-9 text-right font-display text-sm font-bold text-white">{pct}%</span>
+              <span className={`w-9 text-right font-display text-sm font-bold ${power > 0.9 ? "cp-fire-text" : "text-white"}`}>{pct}%</span>
             </>
           )}
         </div>
@@ -424,13 +427,10 @@ export default function PoolTable() {
         className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-2 pl-[max(10px,env(safe-area-inset-left))] pr-[max(10px,env(safe-area-inset-right))]"
         style={{ height: HUD_BOTTOM, paddingBottom: "env(safe-area-inset-bottom)" }}
       >
-        <div className="flex min-w-0 items-center gap-2">
-          <Chip label="Break" value={run} accent />
-          <div className="flex max-w-[44vw] items-center gap-1 overflow-hidden pl-0.5">
-            {pottedCodes.slice(-10).map(({ id, code }) => (
-              <PottedBall key={id} code={code} />
-            ))}
-          </div>
+        <div className="flex min-w-0 items-center gap-1 overflow-hidden pl-0.5">
+          {pottedCodes.slice(-12).map(({ id, code }) => (
+            <PottedBall key={id} code={code} />
+          ))}
         </div>
 
         <div className="shrink-0 text-center">
@@ -561,7 +561,7 @@ function PottedBall({ code }: { code: string }) {
   return (
     <span
       className="relative h-6 w-6 shrink-0 overflow-hidden rounded-full shadow-md ring-1 ring-black/50"
-      style={{ animation: "cp-roll-in 0.6s cubic-bezier(.34,1.15,.5,1) both" }}
+      style={{ animation: "cp-roll-in 0.7s cubic-bezier(.34,1.12,.5,1) both" }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={`/flags/${code}.png`} alt="" className="absolute inset-0 h-full w-full object-cover" />
@@ -636,6 +636,7 @@ function drawFelt(
   kids: boolean,
   flash: number[],
   surface: Surface,
+  cueFlash: number,
 ) {
   if (!canvas.width || !canvas.height) return; // not sized yet (avoids non-finite gradients)
   const rectW = canvas.getBoundingClientRect().width;
@@ -755,9 +756,27 @@ function drawFelt(
     }
   }
 
+  // Cue ball just respawned (scratch): one white pulse behind the WebGL ball.
+  const cue = balls.find((b) => b.isCue);
+  if (cueFlash > 0 && cue && !cue.sunk) {
+    const a = Math.sin((1 - cueFlash / CUE_FLASH_DUR) * Math.PI); // single 0 -> 1 -> 0 pulse
+    const cx = px(cue.x);
+    const cy = py(cue.y);
+    const r = BALL_R * scale * (1.5 + a * 1.1);
+    const g = ctx.createRadialGradient(cx, cy, BALL_R * scale * 0.4, cx, cy, r);
+    g.addColorStop(0, `rgba(255,255,255,${0.95 * a})`);
+    g.addColorStop(0.6, `rgba(255,255,255,${0.4 * a})`);
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.save();
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   // Aim guide: dotted line + target marker + cue stick. Kids mode adds a ghost ball
   // at the contact point and an arrow for the struck ball's direction.
-  const cue = balls.find((b) => b.isCue);
   if (cue && !cue.sunk && aim.active && !moving) {
     const hit = kids ? predictHit(cue.x, cue.y, aim.dirX, aim.dirY, balls) : null;
     const reach = hit

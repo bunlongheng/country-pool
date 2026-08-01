@@ -83,15 +83,85 @@ function knock(dur: number, gain: number, freq: number) {
   src.stop(t0 + dur + 0.02);
 }
 
+// --- Background music: a soft, looping lounge tune, fully synthesised. -------
+// Routed through `master`, so the existing mute toggle silences it too. A small
+// look-ahead scheduler keeps the loop going without any audio files.
+let musicGain: GainNode | null = null;
+let musicTimer: ReturnType<typeof setInterval> | null = null;
+let musicStep = 0;
+let musicNextT = 0;
+const BEAT = 0.55; // ~109 BPM, easy lounge tempo
+// A gentle 4-bar loop: Am - F - C - G. Each bar = one chord (3 tones).
+const CHORDS: number[][] = [
+  [220.0, 261.63, 329.63], // Am  (A3 C4 E4)
+  [174.61, 220.0, 261.63], // F   (F3 A3 C4)
+  [261.63, 329.63, 392.0], // C   (C4 E4 G4)
+  [196.0, 246.94, 293.66], // G   (G3 B3 D4)
+];
+const ARP = [0, 2, 1, 2]; // chord tone picked for the pluck on each beat
+
+function musicNote(freq: number, t: number, dur: number, gain: number, type: OscillatorType) {
+  if (!ctx || !musicGain) return;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(gain, t + 0.05);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.connect(g);
+  g.connect(musicGain);
+  osc.start(t);
+  osc.stop(t + dur + 0.02);
+}
+
+function scheduleMusic() {
+  if (!ctx || !musicGain) return;
+  while (musicNextT < ctx.currentTime + 0.25) {
+    const chord = CHORDS[Math.floor(musicStep / 4) % CHORDS.length];
+    const beatIdx = musicStep % 4;
+    const t = musicNextT;
+    if (beatIdx === 0) chord.forEach((f) => musicNote(f, t, 2.0, 0.03, "sine")); // soft pad
+    if (beatIdx === 0 || beatIdx === 2) musicNote(chord[0] / 2, t, 0.5, 0.09, "triangle"); // bass
+    musicNote(chord[ARP[beatIdx] % chord.length] * 2, t, 0.34, 0.045, "triangle"); // pluck
+    musicStep++;
+    musicNextT += BEAT;
+  }
+}
+
+function startMusic() {
+  const c = ensure();
+  if (!c || !master || musicTimer) return;
+  if (!musicGain) {
+    musicGain = c.createGain();
+    musicGain.gain.value = 0.7;
+    musicGain.connect(master);
+  }
+  musicStep = 0;
+  musicNextT = c.currentTime + 0.15;
+  scheduleMusic();
+  musicTimer = setInterval(scheduleMusic, 60);
+}
+
 export const sound = {
   unlock() {
     ensure();
+    startMusic(); // begin the background tune on the first user interaction
   },
-  // The cue striking the ball - sharp crack, power 0..1 shapes it.
+  // The cue striking the ball - sharp crack, power 0..1 shapes it. Loudness rises on a
+  // steep (quadratic) curve so a soft tap is quiet and a full shot cracks hard; above
+  // 90% (fire mode) a deep boom + whoosh layer on so max power is unmistakably louder.
   cue(power = 1) {
-    const p = 0.35 + power * 0.65;
-    knock(0.05, 0.5 * p, 2600);
-    tone({ type: "triangle", from: 180, to: 90, dur: 0.06, gain: 0.16 * p });
+    const p = Math.max(0, Math.min(1, power));
+    const v = 0.18 + p * p * 1.05; // ~0.18 soft -> ~1.2 at full
+    knock(0.05, 0.5 * v, 2200 + p * 900);
+    tone({ type: "triangle", from: 180, to: 90, dur: 0.06, gain: 0.16 * v });
+    const fire = Math.max(0, (p - 0.9) / 0.1);
+    if (fire > 0) {
+      knock(0.12, 0.55 * fire, 140); // low thud
+      tone({ type: "sawtooth", from: 95, to: 40, dur: 0.24, gain: 0.32 * fire }); // boom
+      tone({ type: "square", from: 820, to: 200, dur: 0.14, gain: 0.12 * fire, delay: 0.01 }); // whoosh
+    }
   },
   // Ball-on-ball click. Loudness + pitch scale with impact speed (0..1-ish).
   click(impact: number) {
