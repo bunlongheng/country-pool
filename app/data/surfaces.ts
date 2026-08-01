@@ -221,6 +221,60 @@ export const SURFACES: Surface[] = [
   },
 ];
 
+// ---- Rail / frame materials. Each surface gets a themed frame + bolt colour and a
+// gloss strength (0 = matte, 1 = mirror) that drives the light sheen on the rails. ----
+export type RailMaterial = {
+  frame: [string, string, string]; // vertical gradient top -> mid -> bottom
+  edge: string; // bright outer + inner trim
+  bolt: string; // bolt colour
+  gloss: number; // 0..1 sheen strength
+};
+
+const WOOD: RailMaterial = { frame: ["#6b4525", "#5a3a1f", "#3a2412"], edge: "#d9b25a", bolt: "#d9b25a", gloss: 0.35 };
+const WALNUT: RailMaterial = { frame: ["#5a3a22", "#432a17", "#281809"], edge: "#c79a5a", bolt: "#c79a5a", gloss: 0.4 };
+const LEATHER: RailMaterial = { frame: ["#4a3128", "#33211b", "#1c110d"], edge: "#b98a4e", bolt: "#7a5a3a", gloss: 0.22 };
+const BLACK: RailMaterial = { frame: ["#34353b", "#212227", "#0c0c0f"], edge: "#8a8f98", bolt: "#b8bcc4", gloss: 0.5 };
+const METAL: RailMaterial = { frame: ["#8b929b", "#565c64", "#2e333a"], edge: "#dfe4ea", bolt: "#eef2f6", gloss: 0.72 };
+const ALUMINUM: RailMaterial = { frame: ["#cfd3d8", "#9aa0a7", "#646a72"], edge: "#eef1f4", bolt: "#f4f6f8", gloss: 0.82 };
+
+const RAILS: Record<string, RailMaterial> = {
+  pool: WOOD, // classic wood + brass
+  soccer: ALUMINUM, // stadium aluminium
+  football: LEATHER, // black leather
+  basketball: WALNUT, // hardwood walnut
+  baseball: WOOD, // natural bat wood
+  tennis: METAL, // brushed gunmetal
+  pingpong: BLACK, // matte black
+  swim: ALUMINUM, // pool-deck aluminium
+};
+
+export function railFor(key: string): RailMaterial {
+  return RAILS[key] ?? WOOD;
+}
+
+// ---- Cloth colours: popular pool-table felt shades, independent of the sport. Pick
+// "classic" to keep each surface's own felt (grass for soccer, etc.); any other choice
+// overrides the felt base colour while the sport markings still draw on top. ----
+export type Cloth = { key: string; label: string; felt: [string, string, string] };
+
+export const CLOTHS: Cloth[] = [
+  { key: "classic", label: "Classic (per table)", felt: ["#2b8a76", "#17685c", "#0d443d"] },
+  { key: "green", label: "Tournament Green", felt: ["#2f9c6a", "#1f7a52", "#124a33"] },
+  { key: "blue", label: "Championship Blue", felt: ["#2f7fc4", "#1f5f9c", "#123a63"] },
+  { key: "turquoise", label: "Dark Turquoise", felt: ["#1f9c94", "#137a72", "#0a4a45"] },
+  { key: "red", label: "Burgundy Red", felt: ["#b0403f", "#8a2f2e", "#521a1a"] },
+  { key: "purple", label: "Royal Purple", felt: ["#8250b8", "#5f3a86", "#382050"] },
+  { key: "black", label: "Midnight Black", felt: ["#3a3a40", "#242427", "#0e0e10"] },
+  { key: "tan", label: "Camel Tan", felt: ["#c2a86a", "#a38a4e", "#6a5a30"] },
+  { key: "grey", label: "Slate Grey", felt: ["#8a9096", "#5f656b", "#33373b"] },
+];
+
+// The felt stops to paint, or null when "classic" (use the surface's own felt).
+export function clothFor(key: string): [string, string, string] | null {
+  if (key === "classic") return null;
+  return CLOTHS.find((c) => c.key === key)?.felt ?? null;
+}
+
 export const DEFAULT_SURFACE = SURFACES[0];
 
 export function surfaceByKey(key: string | null | undefined): Surface {

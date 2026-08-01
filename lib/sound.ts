@@ -83,70 +83,32 @@ function knock(dur: number, gain: number, freq: number) {
   src.stop(t0 + dur + 0.02);
 }
 
-// --- Background music: a soft, looping lounge tune, fully synthesised. -------
-// Routed through `master`, so the existing mute toggle silences it too. A small
-// look-ahead scheduler keeps the loop going without any audio files.
-let musicGain: GainNode | null = null;
-let musicTimer: ReturnType<typeof setInterval> | null = null;
-let musicStep = 0;
-let musicNextT = 0;
-const BEAT = 0.55; // ~109 BPM, easy lounge tempo
-// A gentle 4-bar loop: Am - F - C - G. Each bar = one chord (3 tones).
-const CHORDS: number[][] = [
-  [220.0, 261.63, 329.63], // Am  (A3 C4 E4)
-  [174.61, 220.0, 261.63], // F   (F3 A3 C4)
-  [261.63, 329.63, 392.0], // C   (C4 E4 G4)
-  [196.0, 246.94, 293.66], // G   (G3 B3 D4)
-];
-const ARP = [0, 2, 1, 2]; // chord tone picked for the pluck on each beat
+// --- Background music: the theme clip, served as a local file so the CSP stays
+// 'self'. Started on the first user gesture, looped, and silenced by the same mute
+// toggle as the sound effects. A native <audio> element (not WebAudio) keeps it simple
+// and reliable across browsers.
+let theme: HTMLAudioElement | null = null;
 
-function musicNote(freq: number, t: number, dur: number, gain: number, type: OscillatorType) {
-  if (!ctx || !musicGain) return;
-  const osc = ctx.createOscillator();
-  const g = ctx.createGain();
-  osc.type = type;
-  osc.frequency.setValueAtTime(freq, t);
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(gain, t + 0.05);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  osc.connect(g);
-  g.connect(musicGain);
-  osc.start(t);
-  osc.stop(t + dur + 0.02);
-}
-
-function scheduleMusic() {
-  if (!ctx || !musicGain) return;
-  while (musicNextT < ctx.currentTime + 0.25) {
-    const chord = CHORDS[Math.floor(musicStep / 4) % CHORDS.length];
-    const beatIdx = musicStep % 4;
-    const t = musicNextT;
-    if (beatIdx === 0) chord.forEach((f) => musicNote(f, t, 2.0, 0.03, "sine")); // soft pad
-    if (beatIdx === 0 || beatIdx === 2) musicNote(chord[0] / 2, t, 0.5, 0.09, "triangle"); // bass
-    musicNote(chord[ARP[beatIdx] % chord.length] * 2, t, 0.34, 0.045, "triangle"); // pluck
-    musicStep++;
-    musicNextT += BEAT;
+function startTheme() {
+  if (typeof window === "undefined") return;
+  try {
+    if (!theme) {
+      theme = new Audio("/theme.mp3");
+      theme.loop = true;
+      theme.preload = "auto";
+      theme.volume = 0.55;
+    }
+    theme.muted = muted;
+    if (theme.paused) void theme.play().catch(() => {}); // ignore autoplay block
+  } catch {
+    /* audio unavailable - the synthesised effects still play */
   }
-}
-
-function startMusic() {
-  const c = ensure();
-  if (!c || !master || musicTimer) return;
-  if (!musicGain) {
-    musicGain = c.createGain();
-    musicGain.gain.value = 0.7;
-    musicGain.connect(master);
-  }
-  musicStep = 0;
-  musicNextT = c.currentTime + 0.15;
-  scheduleMusic();
-  musicTimer = setInterval(scheduleMusic, 60);
 }
 
 export const sound = {
   unlock() {
     ensure();
-    startMusic(); // begin the background tune on the first user interaction
+    startTheme(); // begin the theme music on the first user interaction
   },
   // The cue striking the ball - sharp crack, power 0..1 shapes it. Loudness rises on a
   // steep (quadratic) curve so a soft tap is quiet and a full shot cracks hard; above
@@ -196,6 +158,7 @@ export const sound = {
   setMuted(m: boolean) {
     muted = m;
     if (master && ctx) master.gain.setTargetAtTime(m ? 0 : 0.9, ctx.currentTime, 0.01);
+    if (theme) theme.muted = m;
     if (typeof window !== "undefined") window.localStorage?.setItem(STORE_KEY, m ? "1" : "0");
     listeners.forEach((fn) => fn(m));
   },

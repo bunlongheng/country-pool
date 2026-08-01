@@ -16,8 +16,13 @@ export type Ball = {
 // Play surface in table units (2:1, the classic pool ratio). Screen mapping is the
 // renderer's job - physics never sees pixels.
 export const TABLE = { w: 200, h: 100 };
-export const BALL_R = 2.55;
-export const POCKET_R = 4.8;
+// Ball + pocket radii. Exposed as live bindings (not const) so the Normal/Big/Huge
+// ball-size option can scale them - along with the rack, cushions and pocket capture -
+// together at runtime via setBallSize(). Tests use the defaults (factor 1).
+export const BASE_BALL_R = 2.55;
+export const BASE_POCKET_R = 4.8;
+export let BALL_R = BASE_BALL_R;
+export let POCKET_R = BASE_POCKET_R;
 // Cushion restitution (how bouncy the rails are) and rolling friction per second.
 export const RAIL_BOUNCE = 0.86;
 export const FRICTION = 1.9; // higher = balls stop sooner
@@ -28,7 +33,8 @@ export const MAX_SHOT = 1300; // cap on launch speed (table units / s)
 // pockets are recessed back INTO the rail (their centre sits past the cushion line) so
 // a ball must be driven firmly and squarely to the rail to drop - a lazy straight roll
 // stops at the jaws instead of being swallowed.
-export const SIDE_RECESS = 2.2;
+export const BASE_SIDE_RECESS = 2.2;
+export let SIDE_RECESS = BASE_SIDE_RECESS;
 export const POCKETS: { x: number; y: number }[] = [
   { x: 0, y: 0 },
   { x: TABLE.w / 2, y: -SIDE_RECESS },
@@ -37,6 +43,23 @@ export const POCKETS: { x: number; y: number }[] = [
   { x: TABLE.w / 2, y: TABLE.h + SIDE_RECESS },
   { x: TABLE.w, y: TABLE.h },
 ];
+
+// Scale ball + pocket sizes together (the pocket/ball ratio is preserved so potting
+// still works) and reposition the recessed side pockets. Physics, the rack, cushions
+// and rendering all read these live bindings, so one call resizes the whole game
+// consistently. factor 1 = default; the UI offers ~1 / 1.5 / 2 (Normal / Big / Huge).
+export function setBallSize(factor: number): void {
+  const f = Math.max(0.5, Math.min(3, factor));
+  // Pockets grow at HALF the ball's rate so big balls still drop, but the holes never
+  // balloon past the rail into cartoon territory. (pf stays comfortably above f-scaled
+  // ball radius: e.g. at f=2, BALL_R=5.1 vs POCKET_R=7.2.)
+  const pf = 1 + (f - 1) * 0.7;
+  BALL_R = BASE_BALL_R * f;
+  POCKET_R = BASE_POCKET_R * pf;
+  SIDE_RECESS = BASE_SIDE_RECESS * pf;
+  POCKETS[1].y = -SIDE_RECESS;
+  POCKETS[4].y = TABLE.h + SIDE_RECESS;
+}
 
 export type StepEvents = {
   rails: number; // cushion bounces this step
