@@ -557,7 +557,12 @@ function bestSafety(balls: Ball[]): Scored | null {
   return best;
 }
 
-export function planShot(balls: Ball[]): ShotPlan | null {
+// planShot picks the AI's next shot. Pass `rng` (e.g. Math.random) to make it CREATIVE:
+// instead of always the single top-scored line, it picks at random among all the shots
+// that are within a small margin of the best AND are safe pots - so it varies its path
+// game to game without ever giving up safety or a real pot. Omit `rng` for deterministic
+// play (used by the tests).
+export function planShot(balls: Ball[], rng?: () => number): ShotPlan | null {
   const cue = balls.find((b) => b.isCue && !b.sunk);
   if (!cue) return null;
   const targets = balls.filter((b) => !b.isCue && !b.sunk);
@@ -568,8 +573,8 @@ export function planShot(balls: Ball[]): ShotPlan | null {
     .sort((a, b) => b.align - a.align || a.dist - b.dist)
     .slice(0, 6);
 
-  let best: Scored | null = null;
-  let bestScore = -Infinity;
+  // Score every (shot, power) pair, keeping them all so we can pick among the near-best.
+  const scored: (Scored & { score: number })[] = [];
   for (const c of rootCands) {
     const base = powerFor(c.dist, c.align);
     const powers = Array.from(new Set([base, Math.min(1, base + 0.13), Math.min(1, base + 0.28)]));
@@ -596,11 +601,18 @@ export function planShot(balls: Ball[]): ShotPlan | null {
       }
       score += c.align * 3; // makeability of this shot
       score -= pw * 1.5; // controlled power - do not overhit
-      if (score > bestScore) {
-        bestScore = score;
-        best = { dirX: c.dirX, dirY: c.dirY, power: pw, target: c.target, pocket: c.pocket, straightness: c.align, viable: true, reason: "", _scratch: sim.scratched, _pots: sim.pottedNonCue, _ro: roPotted };
-      }
+      scored.push({ dirX: c.dirX, dirY: c.dirY, power: pw, target: c.target, pocket: c.pocket, straightness: c.align, viable: true, reason: "", _scratch: sim.scratched, _pots: sim.pottedNonCue, _ro: roPotted, score });
     }
+  }
+  scored.sort((a, b) => b.score - a.score);
+
+  let best: (Scored & { score?: number }) | null = scored[0] ?? null;
+  // Creativity: among safe pots within a margin of the best, choose one at random.
+  if (rng && best && best._pots > 0 && !best._scratch) {
+    const bs = best.score ?? -Infinity;
+    const MARGIN = 6;
+    const pool = scored.filter((s) => s._pots > 0 && !s._scratch && s.score >= bs - MARGIN);
+    if (pool.length > 1) best = pool[Math.floor(rng() * pool.length)];
   }
 
   // If the best pot scratches or nothing pots cleanly, take the safest developing shot.
@@ -614,16 +626,17 @@ export function planShot(balls: Ball[]): ShotPlan | null {
     const pct = Math.round(best.straightness * 100);
     const pace = best.power < 0.55 ? "soft pace to hold position" : best.power > 0.82 ? "firm to carry the distance" : "controlled pace";
     if (best.viable) {
-      best.reason = `Straightest makeable pot (${pct}% straight)`;
+      best.reason = `Makeable pot (${pct}% straight)`;
       if (best._ro > 0) best.reason += `, sets up a ${best._ro + 1}-ball run`;
       best.reason += `; ${pace}`;
     } else {
       best.reason = "No clean pot - safe roll to leave a shot and avoid a scratch";
     }
-    const { _scratch, _pots, _ro, ...plan } = best;
+    const { _scratch, _pots, _ro, score, ...plan } = best;
     void _scratch;
     void _pots;
     void _ro;
+    void score;
     return plan;
   }
 

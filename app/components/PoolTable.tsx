@@ -35,6 +35,9 @@ const HUD_TOP = 40;
 const HUD_BOTTOM = 58;
 const FLASH_DUR = 0.72; // seconds a pocket blinks green (2 pulses) after a ball drops
 const CUE_FLASH_DUR = 0.55; // seconds the cue ball blinks white (1 pulse) after a respawn
+const REPLAY_FPS = 20; // recorded frames per second of motion (sampled every 3rd tick)
+const MAX_FRAMES = 12000; // ~10 min of motion; guards memory (only 1 game is ever kept)
+const REPLAY_SPEEDS = [0.25, 0.5, 1, 2]; // slow-mo to 2x for the rewind scrubber
 let REDUCE_MOTION = false; // set from matchMedia; skips the canvas fire for motion-sensitive users
 
 // One recorded shot for the end-of-rack move log.
@@ -219,6 +222,17 @@ export default function PoolTable() {
   const [elapsedMs, setElapsedMs] = useState(0); // live rack duration, updated off-render
   const [moveLog, setMoveLog] = useState<MoveEntry[]>([]); // every shot + reason, shown at the end
   const moveLogRef = useRef<MoveEntry[]>([]);
+  // Full-game recorder -> slow-mo rewind. Only the current game is kept (cleared on reset).
+  const framesRef = useRef<Float32Array[]>([]); // per-frame [x,y,sunk] * ballCount, table units
+  const [replay, setReplay] = useState(false);
+  const replayRef = useRef(false);
+  const replayHeadRef = useRef(0); // float playhead (frame index)
+  const replayPlayingRef = useRef(true);
+  const replaySpeedRef = useRef(0.5);
+  const [replayIdx, setReplayIdx] = useState(0); // current frame (drives the scrubber)
+  const [frameCount, setFrameCount] = useState(0);
+  const [replayPlaying, setReplayPlaying] = useState(true);
+  const [replaySpeed, setReplaySpeed] = useState(0.5);
   // Pause/resume: freezes physics, the AI, and the timer (paused time is not counted).
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(false);
@@ -252,7 +266,7 @@ export default function PoolTable() {
     if (!aiRef.current || wonRef.current || lostRef.current || pausedRef.current) return;
     const balls = ballsRef.current;
     if (!allStopped(balls)) return;
-    const plan = planShot(balls);
+    const plan = planShot(balls, Math.random); // rng = vary the line game to game
     if (!plan) return;
     // Phase 1 - THINKING: line the shot up on screen (aim guide + cue + power) and name
     // the target, so the plan is visible before the strike.
@@ -362,7 +376,7 @@ export default function PoolTable() {
       // Freeze the AI's next planned shot on screen (aim line + narration) so it can be
       // studied for as long as you like while paused - that is the point of pausing here.
       if (aiRef.current && allStopped(ballsRef.current)) {
-        const plan = planShot(ballsRef.current);
+        const plan = planShot(ballsRef.current, Math.random);
         if (plan) {
           aimRef.current.dirX = plan.dirX;
           aimRef.current.dirY = plan.dirY;
@@ -381,6 +395,47 @@ export default function PoolTable() {
         aiTimerRef.current = setTimeout(() => aiShootRef.current(), 400);
       }
     }
+  }, []);
+
+  // ---- Slow-mo replay of the recorded game ----
+  const enterReplay = useCallback(() => {
+    if (!framesRef.current.length) return;
+    replayHeadRef.current = 0;
+    replayPlayingRef.current = true;
+    replaySpeedRef.current = 0.5; // default to slow-mo
+    setReplaySpeed(0.5);
+    setReplayPlaying(true);
+    setReplayIdx(0);
+    setFrameCount(framesRef.current.length);
+    replayRef.current = true;
+    setReplay(true);
+    dirtyRef.current = true;
+  }, []);
+
+  const exitReplay = useCallback(() => {
+    replayRef.current = false;
+    setReplay(false);
+    dirtyRef.current = true;
+  }, []);
+
+  const toggleReplayPlay = useCallback(() => {
+    const v = !replayPlayingRef.current;
+    if (v && replayHeadRef.current >= framesRef.current.length - 1) replayHeadRef.current = 0; // replay from start
+    replayPlayingRef.current = v;
+    setReplayPlaying(v);
+  }, []);
+
+  const scrubReplay = useCallback((idx: number) => {
+    replayHeadRef.current = idx;
+    replayPlayingRef.current = false;
+    setReplayPlaying(false);
+    setReplayIdx(idx);
+    dirtyRef.current = true;
+  }, []);
+
+  const setSpeed = useCallback((s: number) => {
+    replaySpeedRef.current = s;
+    setReplaySpeed(s);
   }, []);
 
   const muted = useSyncExternalStore(
@@ -429,6 +484,11 @@ export default function PoolTable() {
     setElapsedMs(0);
     moveLogRef.current = [];
     setMoveLog([]);
+    // Drop the previous game's recording - only the current game is ever kept.
+    framesRef.current = [];
+    replayRef.current = false;
+    setReplay(false);
+    setFrameCount(0);
     dirtyRef.current = true;
     setGame(buildRack());
     // Keep auto-playing the new rack if AI mode is on.
@@ -525,6 +585,7 @@ export default function PoolTable() {
     let raf = 0;
     let last = performance.now();
     let wasMoving = false;
+    let recCounter = 0; // samples motion into framesRef every 3rd frame (~20fps)
     // Fixed physics timestep: step the world in exact 1/60 chunks (accumulator pattern)
     // instead of the raw frame delta. This makes physics deterministic and frame-rate
     // independent - and, crucially, IDENTICAL to the AI's simulateShot (also 1/60), so a
@@ -539,8 +600,31 @@ export default function PoolTable() {
       acc += frameDt; // clamp big stalls; drop excess time
       const { ox, oy, scale } = trRef.current;
 
-      if (pausedRef.current) acc = 0; // freeze physics + time while paused
-      if (!pausedRef.current && !allStopped(balls)) {
+      // Replay mode: drive the balls straight from the recording (no physics).
+      if (replayRef.current && framesRef.current.length) {
+        const frames = framesRef.current;
+        if (replayPlayingRef.current) {
+          replayHeadRef.current += replaySpeedRef.current * REPLAY_FPS * frameDt;
+          if (replayHeadRef.current >= frames.length - 1) {
+            replayHeadRef.current = frames.length - 1;
+            replayPlayingRef.current = false;
+            setReplayPlaying(false);
+          }
+          setReplayIdx(Math.floor(replayHeadRef.current));
+        }
+        const f = frames[Math.max(0, Math.min(frames.length - 1, Math.floor(replayHeadRef.current)))];
+        for (let i = 0; i < balls.length; i++) {
+          balls[i].x = f[i * 3];
+          balls[i].y = f[i * 3 + 1];
+          balls[i].sunk = f[i * 3 + 2] > 0.5;
+          balls[i].vx = 0;
+          balls[i].vy = 0;
+        }
+        dirtyRef.current = true;
+      }
+
+      if (pausedRef.current || replayRef.current) acc = 0; // freeze physics while paused/replaying
+      if (!pausedRef.current && !replayRef.current && !allStopped(balls)) {
         let steps = 0;
         while (acc >= STEP && steps < 8) {
           const ev = stepWorld(balls, STEP);
@@ -571,8 +655,21 @@ export default function PoolTable() {
         acc = 0;
       }
       const moving = !allStopped(balls);
+      // Record the motion for slow-mo replay (sample ~20fps; skip while paused/replaying).
+      if (moving && !replayRef.current && !pausedRef.current) {
+        recCounter++;
+        if (recCounter % 3 === 0 && framesRef.current.length < MAX_FRAMES) {
+          const f = new Float32Array(balls.length * 3);
+          for (let i = 0; i < balls.length; i++) {
+            f[i * 3] = balls[i].x;
+            f[i * 3 + 1] = balls[i].y;
+            f[i * 3 + 2] = balls[i].sunk ? 1 : 0;
+          }
+          framesRef.current.push(f);
+        }
+      }
       // Transition moving -> stopped: settle the turn.
-      if (wasMoving && !moving) {
+      if (wasMoving && !moving && !replayRef.current) {
         dirtyRef.current = true; // one final repaint of the resting table
         const cue = balls.find((b) => b.isCue);
         if (cue && cue.sunk) {
@@ -596,6 +693,7 @@ export default function PoolTable() {
           endAtRef.current = Date.now();
           setEndAt(endAtRef.current);
           if (startAtRef.current != null) setElapsedMs(endAtRef.current - startAtRef.current - pausedMsRef.current);
+          setFrameCount(framesRef.current.length); // recording is complete -> enable replay
           sound.win();
         } else if (!wonRef.current && !lostRef.current && (shotsRef.current >= MAX_SHOTS || deathsRef.current >= MAX_DEATHS)) {
           // Out of shots, or scratched too many times -> game over.
@@ -604,6 +702,7 @@ export default function PoolTable() {
           endAtRef.current = Date.now();
           setEndAt(endAtRef.current);
           if (startAtRef.current != null) setElapsedMs(endAtRef.current - startAtRef.current - pausedMsRef.current);
+          setFrameCount(framesRef.current.length); // recording is complete -> enable replay
           sound.gameOver(); // cut the jazz, play the game-over motif
         }
         // AI mode: once the table has settled, queue the computer's next shot.
@@ -669,8 +768,8 @@ export default function PoolTable() {
 
   const onDown = useCallback((e: React.PointerEvent) => {
     sound.unlock();
-    // Ignore taps while paused, while the AI is playing, or when the game is over.
-    if (pausedRef.current || aiRef.current || wonRef.current || lostRef.current || !allStopped(ballsRef.current)) return;
+    // Ignore taps while replaying/paused, while the AI is playing, or when the game is over.
+    if (replayRef.current || pausedRef.current || aiRef.current || wonRef.current || lostRef.current || !allStopped(ballsRef.current)) return;
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     aimRef.current.active = true;
     setAiming(true);
@@ -1015,7 +1114,7 @@ export default function PoolTable() {
       )}
 
       {/* Win overlay: confetti + Pool Champion */}
-      {won && (
+      {won && !replay && (
         <div role="dialog" aria-modal="true" aria-label="You win" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 overflow-y-auto bg-black/70 py-6 backdrop-blur-md">
           <Confetti />
           <div className="title-gold z-10 font-display text-5xl font-bold tracking-tight sm:text-7xl">
@@ -1032,17 +1131,20 @@ export default function PoolTable() {
             </div>
           )}
           {moveLog.length > 0 && <MoveLogPanel log={moveLog} />}
-          <button
-            onClick={resetGame}
-            className="z-10 mt-2 rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-8 py-3 font-display text-xl font-bold tracking-wide text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
-          >
-            Rack Again
-          </button>
+          <div className="z-10 mt-2 flex flex-wrap items-center justify-center gap-3">
+            {frameCount > 0 && <ReplayCta onClick={enterReplay} />}
+            <button
+              onClick={resetGame}
+              className="rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-8 py-3 font-display text-xl font-bold tracking-wide text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
+            >
+              Rack Again
+            </button>
+          </div>
         </div>
       )}
 
       {/* Lose overlay */}
-      {lost && (
+      {lost && !replay && (
         <div role="dialog" aria-modal="true" aria-label="Game over" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 overflow-y-auto bg-black/80 py-6 backdrop-blur-md">
           <div className="font-display text-5xl font-bold tracking-tight text-[#ff5a4a] drop-shadow-lg sm:text-7xl">
             Game Over
@@ -1062,15 +1164,85 @@ export default function PoolTable() {
             </div>
           )}
           {moveLog.length > 0 && <MoveLogPanel log={moveLog} />}
-          <button
-            onClick={resetGame}
-            className="mt-2 rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-8 py-3 font-display text-xl font-bold tracking-wide text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
-          >
-            Try Again
-          </button>
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-3">
+            {frameCount > 0 && <ReplayCta onClick={enterReplay} />}
+            <button
+              onClick={resetGame}
+              className="rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-8 py-3 font-display text-xl font-bold tracking-wide text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Slow-mo replay controls (table + WebGL balls play underneath, fully visible) */}
+      {replay && frameCount > 0 && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-40 flex flex-col items-center gap-2 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3">
+          <div className="pointer-events-auto flex w-full max-w-2xl flex-col gap-2 rounded-2xl bg-black/80 px-4 py-3 shadow-2xl ring-1 ring-white/15 backdrop-blur-md">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={toggleReplayPlay}
+                aria-label={replayPlaying ? "Pause" : "Play"}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] text-[#231a08] ring-1 ring-[#f3d888] transition active:scale-95"
+              >
+                {replayPlaying ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
+                )}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(0, frameCount - 1)}
+                value={replayIdx}
+                onChange={(e) => scrubReplay(Number(e.target.value))}
+                aria-label="Rewind / scrub"
+                className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-white/25 accent-[#f3d888]"
+              />
+              <span className="w-16 shrink-0 text-right font-display text-sm font-bold tabular-nums text-white">
+                {fmtDur((replayIdx / REPLAY_FPS) * 1000)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                {REPLAY_SPEEDS.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setSpeed(s)}
+                    className={`rounded-full px-2.5 py-1 text-xs font-bold transition active:scale-95 ${
+                      replaySpeed === s ? "bg-[#f3d888] text-[#231a08]" : "bg-white/10 text-white/70 ring-1 ring-white/20"
+                    }`}
+                  >
+                    {s}x
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={exitReplay}
+                className="rounded-full bg-white/10 px-4 py-1.5 text-sm font-semibold text-white ring-1 ring-white/25 transition active:scale-95"
+              >
+                Done
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
+  );
+}
+
+// "Watch replay" call-to-action on the end screen.
+function ReplayCta({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="z-10 flex items-center gap-2 rounded-full bg-white/10 px-6 py-3 font-display text-lg font-bold tracking-wide text-white ring-1 ring-white/30 transition active:scale-95"
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M11 9v6l5-3z" fill="currentColor" stroke="none" /></svg>
+      Slow-mo replay
+    </button>
   );
 }
 
