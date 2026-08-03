@@ -349,3 +349,127 @@ export function rack(countryIndices: number[]): Ball[] {
   }
   return balls;
 }
+
+// Place the cue on the head spot after a scratch. If that spot is occupied, nudge to the
+// nearest clear position (spiral search) so the cue never respots overlapping a ball.
+export function respotCue(balls: Ball[]): void {
+  const cue = balls.find((b) => b.isCue);
+  if (!cue) return;
+  const sx = TABLE.w * 0.25;
+  const sy = TABLE.h / 2;
+  const min = BALL_R * 2 + 0.05;
+  const clear = (x: number, y: number) =>
+    balls.every((b) => b.isCue || b.sunk || Math.hypot(b.x - x, b.y - y) >= min);
+  let bx = sx;
+  let by = sy;
+  if (!clear(sx, sy)) {
+    let placed = false;
+    for (let r = min; r <= TABLE.w && !placed; r += BALL_R) {
+      for (let a = 0; a < 16 && !placed; a++) {
+        const ang = (a / 16) * Math.PI * 2;
+        const x = Math.min(TABLE.w - BALL_R, Math.max(BALL_R, sx + Math.cos(ang) * r));
+        const y = Math.min(TABLE.h - BALL_R, Math.max(BALL_R, sy + Math.sin(ang) * r));
+        if (clear(x, y)) {
+          bx = x;
+          by = y;
+          placed = true;
+        }
+      }
+    }
+  }
+  cue.x = bx;
+  cue.y = by;
+  cue.vx = 0;
+  cue.vy = 0;
+  cue.sunk = false;
+}
+
+// AI shot planner. Considers every (object ball, pocket) pair via the ghost-ball
+// method: to sink ball T into pocket P, the cue must arrive at the ghost point one
+// ball-diameter behind T on the T->P line. A shot is only viable if (a) the cut isn't
+// too thin (dot of cue->ghost and T->P stays positive) and (b) the cue actually reaches
+// T first (no other ball blocks the line). Among the viable shots we pick the one with
+// the best pot probability - straightest cut, shortest travel - so the AI clears the
+// rack in as few shots as possible. Returns the aim/power plus the chosen target +
+// pocket so the UI can narrate the plan. Null when no ball is left.
+export type ShotPlan = {
+  dirX: number;
+  dirY: number;
+  power: number;
+  target: Ball;
+  pocket: { x: number; y: number };
+  straightness: number; // 0..1 (1 = dead-straight, easiest); low = risky cut
+  viable: boolean; // false = no clean shot found, this is a best-effort nudge
+};
+
+export function planShot(balls: Ball[]): ShotPlan | null {
+  const cue = balls.find((b) => b.isCue && !b.sunk);
+  if (!cue) return null;
+  const targets = balls.filter((b) => !b.isCue && !b.sunk);
+  if (!targets.length) return null;
+
+  const diag = Math.hypot(TABLE.w, TABLE.h);
+  let best: ShotPlan | null = null;
+  let bestScore = -Infinity;
+
+  for (const t of targets) {
+    for (const p of POCKETS) {
+      const gx = p.x - t.x;
+      const gy = p.y - t.y;
+      const gd = Math.hypot(gx, gy);
+      if (gd < 1e-3) continue;
+      const gux = gx / gd;
+      const guy = gy / gd;
+      // Ghost cue position: one ball-diameter behind T along the T->P line.
+      const ghx = t.x - gux * BALL_R * 2;
+      const ghy = t.y - guy * BALL_R * 2;
+      const cx = ghx - cue.x;
+      const cy = ghy - cue.y;
+      const cd = Math.hypot(cx, cy);
+      if (cd < 1e-3) continue;
+      const cux = cx / cd;
+      const cuy = cy / cd;
+      const align = cux * gux + cuy * guy; // 1 = straight, 0 = 90deg cut
+      if (align < 0.25) continue; // too thin to make reliably
+      // The cue must strike THIS ball first, or the line is blocked.
+      const hit = predictHit(cue.x, cue.y, cux, cuy, balls);
+      if (!hit || hit.target.id !== t.id) continue;
+      // Prefer straight + short shots (higher pot chance). Distance is normalised to
+      // the table diagonal so both terms are comparable.
+      const score = align * 3 - (cd + gd) / diag;
+      if (score > bestScore) {
+        bestScore = score;
+        // Enough pace to carry T the full T->P distance, plus extra for thin cuts
+        // (a glancing hit transfers less speed), floored so it always reaches.
+        const power = Math.max(0.42, Math.min(1, 0.4 + (cd + gd) / (diag * 1.3) + (1 - align) * 0.4));
+        best = { dirX: cux, dirY: cuy, power, target: t, pocket: p, straightness: align, viable: true };
+      }
+    }
+  }
+  if (best) return best;
+
+  // No clean pot available: nudge the nearest ball toward its closest pocket at medium
+  // pace to open the table up for the next turn.
+  let near = targets[0];
+  let nd = Infinity;
+  for (const t of targets) {
+    const d = Math.hypot(t.x - cue.x, t.y - cue.y);
+    if (d < nd) {
+      nd = d;
+      near = t;
+    }
+  }
+  let pocket = POCKETS[0];
+  let pd = Infinity;
+  for (const p of POCKETS) {
+    const d = Math.hypot(p.x - near.x, p.y - near.y);
+    if (d < pd) {
+      pd = d;
+      pocket = p;
+    }
+  }
+  const dx = near.x - cue.x;
+  const dy = near.y - cue.y;
+  const dd = Math.hypot(dx, dy) || 1;
+  return { dirX: dx / dd, dirY: dy / dd, power: 0.6, target: near, pocket, straightness: 0, viable: false };
+}

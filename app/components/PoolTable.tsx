@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import dynamic from "next/dynamic";
 import { COUNTRIES } from "../data/countries";
-import { SURFACES, surfaceByKey, railFor, RAIL_OPTIONS, railByKey, CLOTHS, clothFor, type Surface, type RailMaterial } from "../data/surfaces";
+import { RAIL_OPTIONS, railByKey, CLOTHS, clothFor, STICKS, stickByKey, type RailMaterial, type StickMaterial } from "../data/surfaces";
 import { sound } from "@/lib/sound";
 import {
   BALL_R,
@@ -12,8 +12,10 @@ import {
   TABLE,
   aimPath,
   allStopped,
+  planShot,
   predictHit,
   rack,
+  respotCue,
   setBallSize,
   shoot,
   stepWorld,
@@ -25,10 +27,12 @@ import type { BallRender, BallSkin } from "./PoolBalls";
 const PoolBalls = dynamic(() => import("./PoolBalls"), { ssr: false });
 
 const OBJECT_BALLS = 15;
+const MAX_SHOTS = 30; // clear the rack within this many shots, or lose
+const MAX_DEATHS = 5; // scratch this many times and you lose
 const MAX_DRAG = 190; // px of pull for full power
 // Reserved HUD bands (px) above and below the felt so nothing ever overlaps the table.
 const HUD_TOP = 40;
-const HUD_BOTTOM = 44;
+const HUD_BOTTOM = 58;
 const FLASH_DUR = 0.72; // seconds a pocket blinks green (2 pulses) after a ball drops
 const CUE_FLASH_DUR = 0.55; // seconds the cue ball blinks white (1 pulse) after a respawn
 let REDUCE_MOTION = false; // set from matchMedia; skips the canvas fire for motion-sensitive users
@@ -68,9 +72,6 @@ function buildRack(): { balls: Ball[]; skins: BallSkin[] } {
   return { balls, skins };
 }
 
-const readSurface = () =>
-  typeof window !== "undefined" ? window.localStorage?.getItem("cp-surface") || "pool" : "pool";
-
 // Ball-size option (scales physics + render together). Sizes run bigger for visibility.
 const BALL_SIZES = [
   { label: "Normal", factor: 1.5 },
@@ -81,10 +82,13 @@ const readBallSize = () =>
   (typeof window !== "undefined" && Number(window.localStorage?.getItem("cp-ballsize"))) || 1.5;
 
 const readCloth = () =>
-  typeof window !== "undefined" ? window.localStorage?.getItem("cp-cloth") || "classic" : "classic";
+  typeof window !== "undefined" ? window.localStorage?.getItem("cp-cloth") || "green" : "green";
 
 const readRail = () =>
-  typeof window !== "undefined" ? window.localStorage?.getItem("cp-rail") || "auto" : "auto";
+  typeof window !== "undefined" ? window.localStorage?.getItem("cp-rail") || "wood" : "wood";
+
+const readStick = () =>
+  typeof window !== "undefined" ? window.localStorage?.getItem("cp-stick") || "wood" : "wood";
 
 // Shared styling for a settings quick-tab button (active = green, else dark).
 const tabCls = (active: boolean) =>
@@ -121,12 +125,12 @@ export default function PoolTable() {
   const [aiming, setAiming] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [surfaceKey, setSurfaceKey] = useState(readSurface);
-  const surfaceRef = useRef<Surface>(surfaceByKey(surfaceKey));
   const [clothKey, setClothKey] = useState(readCloth);
-  const clothRef = useRef<[string, string, string] | null>(clothFor(clothKey));
+  const clothRef = useRef<[string, string, string]>(clothFor(clothKey));
   const [railKey, setRailKey] = useState(readRail);
-  const railRef = useRef<RailMaterial | null>(railByKey(railKey));
+  const railRef = useRef<RailMaterial>(railByKey(railKey));
+  const [stickKey, setStickKey] = useState(readStick);
+  const stickRef = useRef<StickMaterial>(stickByKey(stickKey));
   const pocketFlashRef = useRef<number[]>(POCKETS.map(() => 0)); // per-pocket blink timer
   const cueFlashRef = useRef(0); // cue-ball white blink timer (set on respawn)
   const dirtyRef = useRef(true); // request one felt repaint next frame (settings/resize/settle)
@@ -151,25 +155,39 @@ export default function PoolTable() {
     } catch {}
   }, []);
 
-  const pickSurface = useCallback((key: string) => {
+  const pickStick = useCallback((key: string) => {
     sound.unlock();
-    setSurfaceKey(key);
-    surfaceRef.current = surfaceByKey(key);
+    setStickKey(key);
+    stickRef.current = stickByKey(key);
     dirtyRef.current = true;
     try {
-      window.localStorage?.setItem("cp-surface", key);
+      window.localStorage?.setItem("cp-stick", key);
     } catch {}
   }, []);
 
-  const [potted, setPotted] = useState(0);
+  // Shuffle cloth colour + frame + stick at once (mid-game safe - pure paint).
+  const pickRandom = useCallback(() => {
+    const rc = CLOTHS[Math.floor(Math.random() * CLOTHS.length)].key;
+    const rf = RAIL_OPTIONS[Math.floor(Math.random() * RAIL_OPTIONS.length)].key;
+    const rk = STICKS[Math.floor(Math.random() * STICKS.length)].key;
+    pickCloth(rc);
+    pickRail(rf);
+    pickStick(rk);
+  }, [pickCloth, pickRail, pickStick]);
+
+  const [potted, setPotted] = useState(0); // balls potted this rack (shown as "Score")
   const [pottedCodes, setPottedCodes] = useState<{ id: number; code: string }[]>([]);
   const pottedListRef = useRef<{ id: number; code: string }[]>([]); // pot-order, for the tray
   const [shots, setShots] = useState(0);
+  const shotsRef = useRef(0);
   const [deaths, setDeaths] = useState(0); // times the cue ball was scratched
+  const [damageKey, setDamageKey] = useState(0); // bumps to replay the red screen flash
   const [won, setWon] = useState(false);
+  const [lost, setLost] = useState(false); // out of shots, or too many scratches
   const pottedRef = useRef(0);
   const deathsRef = useRef(0);
   const wonRef = useRef(false);
+  const lostRef = useRef(false);
   const [portrait, setPortrait] = useState(false);
   const [kids, setKids] = useState(false);
   const kidsRef = useRef(false);
@@ -181,6 +199,89 @@ export default function PoolTable() {
     setKids(v);
   }, []);
 
+  // ---- AI mode: the computer plans + plays every shot for you, and shows its aim line +
+  // power BEFORE striking so you can learn the line it picked. It always takes the
+  // straightest, closest makeable pot, so it clears the rack in as few shots as it can. ----
+  const [ai, setAi] = useState(false);
+  const aiRef = useRef(false);
+  const aiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const aiShootRef = useRef<() => void>(() => {});
+  const [aiPlan, setAiPlan] = useState<{ country: string; precision: number; power: number; viable: boolean } | null>(null);
+
+  const aiShoot = useCallback(() => {
+    if (aiTimerRef.current) {
+      clearTimeout(aiTimerRef.current);
+      aiTimerRef.current = null;
+    }
+    if (!aiRef.current || wonRef.current || lostRef.current) return;
+    const balls = ballsRef.current;
+    if (!allStopped(balls)) return;
+    const plan = planShot(balls);
+    if (!plan) return;
+    // Phase 1 - THINKING: line the shot up on screen (aim guide + cue + power) and name
+    // the target, so the plan is visible before the strike.
+    aimRef.current.dirX = plan.dirX;
+    aimRef.current.dirY = plan.dirY;
+    aimRef.current.power = plan.power;
+    aimRef.current.active = true;
+    setAiming(true);
+    setPower(plan.power);
+    setAiPlan({
+      country: COUNTRIES[plan.target.ci]?.name ?? "the ball",
+      precision: plan.straightness,
+      power: plan.power,
+      viable: plan.viable,
+    });
+    dirtyRef.current = true;
+    // Phase 2 - STRIKE: fire after a beat so the line is watchable/learnable.
+    aiTimerRef.current = setTimeout(() => {
+      aiTimerRef.current = null;
+      aimRef.current.active = false;
+      setAiming(false);
+      dirtyRef.current = true;
+      if (!aiRef.current || wonRef.current || lostRef.current) return;
+      const cue = ballsRef.current.find((b) => b.isCue);
+      if (cue) {
+        shoot(cue, plan.dirX, plan.dirY, plan.power);
+        sound.cue(plan.power);
+        shotsRef.current += 1;
+        setShots(shotsRef.current);
+      }
+      aimRef.current.power = 0;
+      setPower(0);
+    }, 1100);
+  }, []);
+  useEffect(() => {
+    aiShootRef.current = aiShoot;
+  }, [aiShoot]);
+
+  const toggleAI = useCallback(() => {
+    sound.unlock();
+    const v = !aiRef.current;
+    aiRef.current = v;
+    setAi(v);
+    if (v) {
+      aiTimerRef.current = setTimeout(() => aiShootRef.current(), 500); // start playing
+    } else {
+      if (aiTimerRef.current) {
+        clearTimeout(aiTimerRef.current);
+        aiTimerRef.current = null;
+      }
+      aimRef.current.active = false;
+      setAiming(false);
+      setAiPlan(null);
+      dirtyRef.current = true;
+    }
+  }, []);
+
+  // Stop the AI timer on unmount so a queued shot never fires into a dead component.
+  useEffect(
+    () => () => {
+      if (aiTimerRef.current) clearTimeout(aiTimerRef.current);
+    },
+    [],
+  );
+
   const muted = useSyncExternalStore(
     (cb) => sound.subscribe(cb),
     () => sound.isMuted(),
@@ -189,19 +290,36 @@ export default function PoolTable() {
 
   const resetGame = useCallback(() => {
     sound.unlock();
+    if (aiTimerRef.current) {
+      clearTimeout(aiTimerRef.current);
+      aiTimerRef.current = null;
+    }
+    setAiPlan(null);
     pottedRef.current = 0;
     deathsRef.current = 0;
+    shotsRef.current = 0;
     wonRef.current = false;
+    lostRef.current = false;
     pottedListRef.current = [];
     pocketFlashRef.current = POCKETS.map(() => 0);
+    // Fresh rack = a fresh look: random cloth colour.
+    const rc = CLOTHS[Math.floor(Math.random() * CLOTHS.length)].key;
+    setClothKey(rc);
+    clothRef.current = clothFor(rc);
+    try {
+      window.localStorage?.setItem("cp-cloth", rc);
+    } catch {}
     setConfirmReset(false);
     setPotted(0);
     setPottedCodes([]);
     setShots(0);
     setDeaths(0);
     setWon(false);
+    setLost(false);
     dirtyRef.current = true;
     setGame(buildRack());
+    // Keep auto-playing the new rack if AI mode is on.
+    if (aiRef.current) aiTimerRef.current = setTimeout(() => aiShootRef.current(), 900);
   }, []);
 
   const pickBallSize = useCallback(
@@ -313,10 +431,14 @@ export default function PoolTable() {
           if (b.isCue) {
             sound.scratch();
             deathsRef.current += 1; // a scratch = a "death"
+            setDamageKey((k) => k + 1); // FPS-style red screen flash
           } else {
             sound.pocket();
+            sound.announce(COUNTRIES[b.ci].name); // say the country that just dropped
             pottedRef.current += 1;
             pottedListRef.current.push({ id: b.id, code: COUNTRIES[b.ci].code });
+            setPotted(pottedRef.current); // update Score immediately
+            setPottedCodes([...pottedListRef.current]); // roll the flag into the tray immediately
           }
         }
       }
@@ -325,10 +447,7 @@ export default function PoolTable() {
         dirtyRef.current = true; // one final repaint of the resting table
         const cue = balls.find((b) => b.isCue);
         if (cue && cue.sunk) {
-          cue.sunk = false; // respot the cue on the head spot
-          cue.x = TABLE.w * 0.25;
-          cue.y = TABLE.h / 2;
-          cue.vx = cue.vy = 0;
+          respotCue(balls); // head spot, nudged clear so it never overlaps another ball
           cueFlashRef.current = CUE_FLASH_DUR; // blink the respawned cue ball white
         }
         setPotted(pottedRef.current);
@@ -338,6 +457,16 @@ export default function PoolTable() {
           wonRef.current = true;
           setWon(true);
           sound.win();
+        } else if (!wonRef.current && !lostRef.current && (shotsRef.current >= MAX_SHOTS || deathsRef.current >= MAX_DEATHS)) {
+          // Out of shots, or scratched too many times -> game over.
+          lostRef.current = true;
+          setLost(true);
+          sound.gameOver(); // cut the jazz, play the game-over motif
+        }
+        // AI mode: once the table has settled, queue the computer's next shot.
+        if (aiRef.current && !wonRef.current && !lostRef.current) {
+          if (aiTimerRef.current) clearTimeout(aiTimerRef.current);
+          aiTimerRef.current = setTimeout(() => aiShootRef.current(), 750);
         }
       }
       wasMoving = moving;
@@ -372,7 +501,7 @@ export default function PoolTable() {
       const anyFlash = cueFlashRef.current > 0 || flash.some((f) => f !== 0);
       const active = moving || aimRef.current.active || anyFlash;
       if (active || dirtyRef.current) {
-        drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, surfaceRef.current, cueFlashRef.current, clothRef.current, railRef.current);
+        drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, cueFlashRef.current, clothRef.current, railRef.current, stickRef.current);
         if (!active) dirtyRef.current = false;
       }
     };
@@ -397,7 +526,8 @@ export default function PoolTable() {
 
   const onDown = useCallback((e: React.PointerEvent) => {
     sound.unlock();
-    if (wonRef.current || !allStopped(ballsRef.current)) return;
+    // Ignore taps while the AI is playing (it drives the cue) or the game is over.
+    if (aiRef.current || wonRef.current || lostRef.current || !allStopped(ballsRef.current)) return;
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     aimRef.current.active = true;
     setAiming(true);
@@ -426,12 +556,14 @@ export default function PoolTable() {
     a.active = false;
     setAiming(false);
     dirtyRef.current = true; // clear the aim guide/cue after release
-    if (a.power > 0.04) {
+    // Require a real drag (>12% of full pull, ~23px) so a tap or tiny nudge never fires.
+    if (a.power > 0.12) {
       const cue = ballsRef.current.find((b) => b.isCue);
       if (cue) {
         shoot(cue, a.dirX, a.dirY, a.power);
         sound.cue(a.power);
-        setShots((s) => s + 1);
+        shotsRef.current += 1;
+        setShots(shotsRef.current);
       }
     }
     a.power = 0;
@@ -495,34 +627,34 @@ export default function PoolTable() {
           )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5 rounded-full bg-black/40 px-2.5 py-1 ring-1 ring-[#d9b25a]/30">
-          <span className="text-sm" aria-hidden="true">🎱</span>
-          <span className="text-[12px] font-bold text-white">
-            {potted}/{OBJECT_BALLS}
-          </span>
-        </div>
       </div>
 
-      {/* BOTTOM HUD band - below the felt */}
+      {/* BOTTOM HUD band - below the felt: tray left, 3 stats centered, controls right */}
       <div
-        className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-2 pl-[max(10px,env(safe-area-inset-left))] pr-[max(10px,env(safe-area-inset-right))]"
-        style={{ height: HUD_BOTTOM, paddingBottom: "env(safe-area-inset-bottom)" }}
+        className="absolute inset-x-0 bottom-0 z-20 flex items-center gap-2 pl-[max(20px,env(safe-area-inset-left))] pr-[max(20px,env(safe-area-inset-right))]"
+        style={{ height: HUD_BOTTOM, paddingBottom: "max(10px,env(safe-area-inset-bottom))" }}
       >
-        <div className="flex min-w-0 items-center gap-1 overflow-hidden pl-0.5">
-          {pottedCodes.slice(-12).map(({ id, code }) => (
-            <PottedBall key={id} code={code} />
-          ))}
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+          {pottedCodes
+            .slice(-12)
+            .reverse()
+            .map(({ id, code }) => (
+              <PottedBall key={id} code={code} />
+            ))}
         </div>
 
-        <div className="shrink-0 text-center">
-          <div className="text-[10px] uppercase tracking-widest text-white/60">Shots</div>
-          <div className="title-gold font-display text-2xl font-bold leading-none">{shots}</div>
+        <div className="flex shrink-0 items-center gap-6 sm:gap-8">
+          <Stat label="Score" value={potted} />
+          <Stat label="Shots" value={shots} />
+          <Stat label="Died" value={deaths} />
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5">
-          <Chip label="Died" value={deaths} accent />
+        <div className="flex flex-1 shrink-0 items-center justify-end gap-1.5">
           <IconBtn onClick={() => { sound.unlock(); setShowSettings(true); }} active={showSettings} title="Table surface">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+          </IconBtn>
+          <IconBtn onClick={toggleAI} active={ai} title="AI mode - let the computer play and learn its shots">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="8" width="16" height="11" rx="2.5" /><path d="M12 8V4M12 4h-1.5M12 4h1.5" /><circle cx="9" cy="13.5" r="1.2" /><circle cx="15" cy="13.5" r="1.2" /><path d="M2 13h2M20 13h2" /></svg>
           </IconBtn>
           <IconBtn onClick={toggleKids} active={kids} title="Kids mode - show where the ball will go">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /><circle cx="12" cy="12" r="2.4" /></svg>
@@ -540,6 +672,26 @@ export default function PoolTable() {
         </div>
       </div>
 
+      {/* AI "thinking" banner: names the shot the computer is lining up, with its cut
+          precision + power, so you can learn the line before it strikes. */}
+      {ai && aiPlan && !won && !lost && (
+        <div
+          className="pointer-events-none absolute left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/75 px-3.5 py-1.5 text-xs font-semibold text-white shadow-lg ring-1 ring-white/15 backdrop-blur"
+          style={{ top: HUD_TOP + 6 }}
+        >
+          <span aria-hidden="true">🤖</span>
+          {aiPlan.viable ? (
+            <span>
+              Potting <b className="text-[#f3d888]">{aiPlan.country}</b> - precision {Math.round(aiPlan.precision * 100)}% - power {Math.round(aiPlan.power * 100)}%
+            </span>
+          ) : (
+            <span>
+              No clean pot - safety off <b className="text-[#f3d888]">{aiPlan.country}</b>
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Rotate hint on portrait (kept off the felt, in the top band area) */}
       {portrait && (
         <div
@@ -556,12 +708,19 @@ export default function PoolTable() {
           role="dialog"
           aria-modal="true"
           aria-label="Settings"
-          className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-5 bg-black/70 px-6 backdrop-blur-md"
+          className="absolute inset-0 z-40 overflow-y-auto bg-black/70 backdrop-blur-md"
           onClick={() => setShowSettings(false)}
         >
-          <div className="title-gold font-display text-3xl font-bold sm:text-4xl">Settings</div>
+          <div className="flex min-h-full flex-col items-center justify-center gap-4 px-6 py-8">
+          <div className="title-gold font-display text-3xl font-bold leading-tight sm:text-4xl">Settings</div>
 
           <div className="flex w-full max-w-md flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={pickRandom}
+              className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-4 py-2.5 font-display text-base font-bold text-[#231a08] shadow-lg ring-1 ring-[#f3d888] transition active:scale-95"
+            >
+              <span className="text-lg" aria-hidden="true">🎲</span> Randomize
+            </button>
             <div className="flex flex-col gap-1.5">
               <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Ball Size</span>
               <div className="flex gap-2">
@@ -575,46 +734,48 @@ export default function PoolTable() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Table Style</span>
-              <div className="grid grid-cols-4 gap-2">
-                {SURFACES.map((s) => (
-                  <button key={s.key} onClick={() => pickSurface(s.key)} className={tabCls(s.key === surfaceKey) + " flex-col !gap-0.5 py-2"}>
-                    <span className="text-xl leading-none">{s.emoji}</span>
-                    <span className="text-[10px] leading-tight">{s.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
               <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Cloth Color</span>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="flex flex-wrap justify-center gap-2">
                 {CLOTHS.map((c) => (
-                  <button key={c.key} onClick={() => pickCloth(c.key)} className={tabCls(c.key === clothKey)}>
-                    <span
-                      className="inline-block h-4 w-4 shrink-0 rounded-full ring-1 ring-white/30"
-                      style={{ background: `radial-gradient(circle at 35% 30%, ${c.felt[0]}, ${c.felt[2]})` }}
-                    />
-                    <span className="truncate text-[11px]">{c.label}</span>
-                  </button>
+                  <button
+                    key={c.key}
+                    onClick={() => pickCloth(c.key)}
+                    title={c.label}
+                    aria-label={c.label}
+                    className={`h-7 w-7 shrink-0 rounded-full ring-2 transition active:scale-90 ${
+                      c.key === clothKey ? "scale-110 ring-[#5be36a]" : "ring-white/25"
+                    }`}
+                    style={{ background: `radial-gradient(circle at 34% 28%, ${c.felt[0]}, ${c.felt[2]})` }}
+                  />
                 ))}
               </div>
             </div>
 
             <div className="flex flex-col gap-1.5">
               <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Table Frame</span>
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-6 gap-1.5">
                 {RAIL_OPTIONS.map((r) => (
-                  <button key={r.key} onClick={() => pickRail(r.key)} className={tabCls(r.key === railKey)}>
+                  <button key={r.key} onClick={() => pickRail(r.key)} className={tabCls(r.key === railKey) + " flex-col !gap-1 px-1 py-2"}>
                     <span
-                      className="inline-block h-4 w-4 shrink-0 rounded-full ring-1 ring-white/30"
-                      style={{
-                        background: r.mat
-                          ? `linear-gradient(145deg, ${r.mat.edge}, ${r.mat.frame[2]})`
-                          : "conic-gradient(#d9b25a, #8b929b, #4a3128, #d9b25a)",
-                      }}
+                      className="inline-block h-5 w-5 shrink-0 rounded-full ring-1 ring-white/30"
+                      style={{ background: `linear-gradient(145deg, ${r.mat.edge}, ${r.mat.frame[2]})` }}
                     />
-                    <span className="truncate text-[11px]">{r.label}</span>
+                    <span className="text-[9px] leading-tight">{r.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Stick</span>
+              <div className="grid grid-cols-5 gap-1.5">
+                {STICKS.map((s) => (
+                  <button key={s.key} onClick={() => pickStick(s.key)} className={tabCls(s.key === stickKey) + " flex-col !gap-1 px-1 py-2"}>
+                    <span
+                      className="inline-block h-5 w-5 shrink-0 rounded-full ring-1 ring-white/30"
+                      style={{ background: `linear-gradient(145deg, ${s.mat.shaft[0]}, ${s.mat.shaft[2]})` }}
+                    />
+                    <span className="text-[9px] leading-tight">{s.label}</span>
                   </button>
                 ))}
               </div>
@@ -627,6 +788,7 @@ export default function PoolTable() {
           >
             Done
           </button>
+          </div>
         </div>
       )}
 
@@ -654,13 +816,47 @@ export default function PoolTable() {
         </div>
       )}
 
-      {/* Win overlay */}
+      {/* Scratch = a red FPS-style damage flash across the whole screen (keyed so it
+          replays on every scratch). */}
+      {damageKey > 0 && (
+        <div
+          key={damageKey}
+          className="cp-damage pointer-events-none fixed inset-0 z-50"
+          style={{ background: "radial-gradient(ellipse at center, rgba(200,0,0,0) 30%, rgba(210,25,25,0.9) 100%)" }}
+        />
+      )}
+
+      {/* Win overlay: confetti + Pool Champion */}
       {won && (
-        <div role="dialog" aria-modal="true" aria-label="Rack cleared" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-black/70 backdrop-blur-md">
-          <div className="title-gold font-display text-5xl font-bold tracking-tight sm:text-7xl">
-            Rack Cleared
+        <div role="dialog" aria-modal="true" aria-label="You win" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 overflow-hidden bg-black/70 backdrop-blur-md">
+          <Confetti />
+          <div className="title-gold z-10 font-display text-5xl font-bold tracking-tight sm:text-7xl">
+            Pool Champion
           </div>
+          <div className="z-10 flex gap-10 text-center text-white">
+            <Big label="Shots" value={shots} />
+            <Big label="Died" value={deaths} />
+          </div>
+          <button
+            onClick={resetGame}
+            className="z-10 mt-2 rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-8 py-3 font-display text-xl font-bold tracking-wide text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
+          >
+            Rack Again
+          </button>
+        </div>
+      )}
+
+      {/* Lose overlay */}
+      {lost && (
+        <div role="dialog" aria-modal="true" aria-label="Game over" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-black/80 backdrop-blur-md">
+          <div className="font-display text-5xl font-bold tracking-tight text-[#ff5a4a] drop-shadow-lg sm:text-7xl">
+            Game Over
+          </div>
+          <p className="text-sm font-semibold uppercase tracking-widest text-white/70">
+            {deaths >= MAX_DEATHS ? "Too many scratches" : "Out of shots"}
+          </p>
           <div className="flex gap-10 text-center text-white">
+            <Big label="Score" value={potted} />
             <Big label="Shots" value={shots} />
             <Big label="Died" value={deaths} />
           </div>
@@ -668,10 +864,39 @@ export default function PoolTable() {
             onClick={resetGame}
             className="mt-2 rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-8 py-3 font-display text-xl font-bold tracking-wide text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
           >
-            Rack Again
+            Try Again
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// Falling confetti for the win screen - deterministic per index (no Math.random).
+function Confetti() {
+  const colors = ["#f3d888", "#5be36a", "#2f7fc4", "#ff5a4a", "#b06adf", "#e0913f"];
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      {Array.from({ length: 40 }).map((_, i) => {
+        const left = (i * 97) % 100;
+        const delay = ((i * 53) % 100) / 100;
+        const dur = 2.2 + (((i * 29) % 100) / 100) * 1.8;
+        const size = 6 + ((i * 13) % 6);
+        return (
+          <span
+            key={i}
+            className="absolute top-0 block"
+            style={{
+              left: `${left}%`,
+              width: size,
+              height: size * 1.6,
+              background: colors[i % colors.length],
+              borderRadius: 2,
+              animation: `cp-confetti ${dur}s linear ${delay}s infinite`,
+            }}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -698,13 +923,12 @@ function PottedBall({ code }: { code: string }) {
   );
 }
 
-function Chip({ label, value, accent }: { label: string; value: string | number; accent?: boolean }) {
+// One HUD stat: label above a big gold number (Score / Shots / Died all match).
+function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="shrink-0 rounded-lg bg-black/40 px-2.5 py-0.5 text-center ring-1 ring-white/10">
-      <div className={`font-display text-base font-bold leading-none ${accent ? "text-[#e8c266]" : "text-white"}`}>
-        {value}
-      </div>
+    <div className="shrink-0 text-center">
       <div className="text-[10px] uppercase tracking-widest text-white/60">{label}</div>
+      <div className="title-gold font-display text-2xl font-bold leading-none">{value}</div>
     </div>
   );
 }
@@ -756,10 +980,10 @@ function drawFelt(
   moving: boolean,
   kids: boolean,
   flash: number[],
-  surface: Surface,
   cueFlash: number,
-  cloth: [string, string, string] | null,
-  railOverride: RailMaterial | null,
+  cloth: [string, string, string],
+  mat: RailMaterial,
+  stick: StickMaterial,
 ) {
   if (!canvas.width || !canvas.height) return; // not sized yet (avoids non-finite gradients)
   const rectW = canvas.getBoundingClientRect().width;
@@ -772,7 +996,6 @@ function drawFelt(
   const px = (x: number) => ox + x * scale;
   const py = (y: number) => oy + y * scale;
   const rail = Math.max(16, 13 * scale);
-  const mat = railOverride ?? railFor(surface.key); // chosen frame material, else per-surface
 
   // Warm room glow behind the table.
   const glow = ctx.createRadialGradient(W / 2, H * 0.42, scale * 10, W / 2, H * 0.42, Math.max(W, H) * 0.7);
@@ -838,10 +1061,9 @@ function drawFelt(
     py(TABLE.h / 2),
     scale * TABLE.w * 0.62,
   );
-  const feltStops = cloth ?? surface.felt; // cloth colour overrides the surface felt
-  felt.addColorStop(0, feltStops[0]);
-  felt.addColorStop(0.68, feltStops[1]);
-  felt.addColorStop(1, feltStops[2]);
+  felt.addColorStop(0, cloth[0]);
+  felt.addColorStop(0.68, cloth[1]);
+  felt.addColorStop(1, cloth[2]);
   roundRect(ctx, px(0), py(0), TABLE.w * scale, TABLE.h * scale, scale * 2);
   ctx.fillStyle = felt;
   ctx.fill();
@@ -856,8 +1078,15 @@ function drawFelt(
   ctx.fillStyle = feltLight;
   ctx.fillRect(px(0), py(0), TABLE.w * scale, TABLE.h * scale);
 
-  // Sport-specific markings for the chosen surface.
-  surface.draw({ ctx, px, py, scale });
+  // Standard pool markings: the head string + head/foot spots.
+  ctx.strokeStyle = "rgba(255,255,255,0.09)";
+  ctx.lineWidth = Math.max(0.8, scale * 0.22);
+  ctx.beginPath();
+  ctx.moveTo(px(TABLE.w * 0.25), py(0));
+  ctx.lineTo(px(TABLE.w * 0.25), py(TABLE.h));
+  ctx.stroke();
+  dot(ctx, px(TABLE.w * 0.25), py(TABLE.h / 2), Math.max(1, scale * 0.6), "rgba(255,255,255,0.16)");
+  dot(ctx, px(TABLE.w * 0.7), py(TABLE.h / 2), Math.max(1, scale * 0.6), "rgba(255,255,255,0.16)");
 
   // Ball shadows (grounding for the 3D layer).
   for (const b of balls) {
@@ -874,7 +1103,11 @@ function drawFelt(
   }
   ctx.restore();
 
-  // Pockets: dark mouth + polished gold jaw. A freshly-used pocket blinks green twice.
+  // Pockets: dark mouth + polished jaw, CLIPPED to the outer frame so a big hole never
+  // bulges past the table edge. A freshly-used pocket blinks green (red on a scratch).
+  ctx.save();
+  roundRect(ctx, ox - rail, oy - rail, TABLE.w * scale + rail * 2, TABLE.h * scale + rail * 2, rail * 0.8);
+  ctx.clip();
   for (let i = 0; i < POCKETS.length; i++) {
     const p = POCKETS[i];
     const cx = px(p.x);
@@ -894,7 +1127,8 @@ function drawFelt(
     const f = flash[i];
     if (f !== 0) {
       const mag = Math.abs(f);
-      const a = Math.abs(Math.sin((1 - mag / FLASH_DUR) * Math.PI * 2)); // 2 pulses
+      const pulses = f < 0 ? 3 : 2; // scratch = red x3, pot = green x2
+      const a = Math.abs(Math.sin((1 - mag / FLASH_DUR) * Math.PI * pulses));
       const col = f < 0 ? "255,60,45" : "74,235,120"; // scratch (cue) = red, pot = green
       ctx.save();
       ctx.strokeStyle = `rgba(${col},${0.95 * a})`;
@@ -907,6 +1141,7 @@ function drawFelt(
       ctx.restore();
     }
   }
+  ctx.restore(); // end pocket clip
 
   // Cue ball just respawned (scratch): one white pulse behind the WebGL ball.
   const cue = balls.find((b) => b.isCue);
@@ -927,64 +1162,65 @@ function drawFelt(
     ctx.restore();
   }
 
-  // Aim guide: dotted line + target marker + cue stick. Kids mode adds a ghost ball
-  // at the contact point and an arrow for the struck ball's direction.
+  // Aim guide: dotted trajectory + target reticle by default. Kids mode also predicts
+  // the first ball it will hit, drawing a ghost contact ball + a struck-ball arrow.
   if (cue && !cue.sunk && aim.active && !moving) {
-    const hit = kids ? predictHit(cue.x, cue.y, aim.dirX, aim.dirY, balls) : null;
-    const reach = hit
-      ? Math.hypot(hit.contactX - cue.x, hit.contactY - cue.y)
-      : TABLE.w * (0.4 + aim.power * 0.9);
-    const pts = aimPath(cue.x, cue.y, aim.dirX, aim.dirY, reach, hit ? 0 : 1);
+    {
+      const hit = kids ? predictHit(cue.x, cue.y, aim.dirX, aim.dirY, balls) : null;
+      const reach = hit
+        ? Math.hypot(hit.contactX - cue.x, hit.contactY - cue.y)
+        : TABLE.w * (0.4 + aim.power * 0.9);
+      const pts = aimPath(cue.x, cue.y, aim.dirX, aim.dirY, reach, hit ? 0 : 1);
 
-    // Walk the polyline placing evenly spaced dots (green + bolder in kids mode).
-    const dotCol = kids ? "rgba(126,240,150,0.98)" : "rgba(255,255,255,0.92)";
-    const dotR = Math.max(1, scale * (kids ? 0.62 : 0.5));
-    const step = scale * (kids ? 2.8 : 3.2);
-    let carry = BALL_R * scale + step;
-    for (let i = 1; i < pts.length; i++) {
-      const ax = px(pts[i - 1].x), ay = py(pts[i - 1].y);
-      const bx = px(pts[i].x), by = py(pts[i].y);
-      const segLen = Math.hypot(bx - ax, by - ay);
-      let d = carry;
-      while (d < segLen) {
-        const t = d / segLen;
-        dot(ctx, ax + (bx - ax) * t, ay + (by - ay) * t, dotR, dotCol);
-        d += step;
+      // Dotted trajectory.
+      const dotR = Math.max(1, scale * 0.55);
+      const step = scale * 3;
+      let carry = BALL_R * scale + step;
+      for (let i = 1; i < pts.length; i++) {
+        const ax = px(pts[i - 1].x), ay = py(pts[i - 1].y);
+        const bx = px(pts[i].x), by = py(pts[i].y);
+        const segLen = Math.hypot(bx - ax, by - ay);
+        let d = carry;
+        while (d < segLen) {
+          const t = d / segLen;
+          dot(ctx, ax + (bx - ax) * t, ay + (by - ay) * t, dotR, "rgba(255,255,255,0.9)");
+          d += step;
+        }
+        carry = d - segLen;
       }
-      carry = d - segLen;
+
+      if (hit) {
+        // Ghost cue ball at the contact point (kids mode).
+        ctx.save();
+        ctx.strokeStyle = "rgba(255,255,255,0.9)";
+        ctx.lineWidth = Math.max(1.4, scale * 0.5);
+        ctx.beginPath();
+        ctx.arc(px(hit.contactX), py(hit.contactY), BALL_R * scale, 0, Math.PI * 2);
+        ctx.stroke();
+        // Arrow showing where the struck ball will travel.
+        const tx = px(hit.target.x), ty = py(hit.target.y);
+        const alen = BALL_R * scale * 3.4;
+        drawArrow(ctx, tx, ty, tx + hit.dirX * alen, ty + hit.dirY * alen, "rgba(255,210,80,0.98)", scale);
+        ctx.restore();
+      } else {
+        // Green target reticle at the end of the ray.
+        const end = pts[pts.length - 1];
+        ctx.strokeStyle = "rgba(90,235,120,0.95)";
+        ctx.lineWidth = Math.max(1.5, scale * 0.5);
+        ctx.shadowColor = "rgba(90,235,120,0.8)";
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.arc(px(end.x), py(end.y), BALL_R * scale, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
     }
 
-    if (hit) {
-      // Ghost cue ball at the contact point.
-      ctx.save();
-      ctx.strokeStyle = "rgba(255,255,255,0.9)";
-      ctx.lineWidth = Math.max(1.4, scale * 0.5);
-      ctx.beginPath();
-      ctx.arc(px(hit.contactX), py(hit.contactY), BALL_R * scale, 0, Math.PI * 2);
-      ctx.stroke();
-      // Arrow showing where the struck ball will travel.
-      const tx = px(hit.target.x), ty = py(hit.target.y);
-      const alen = BALL_R * scale * 3.4;
-      drawArrow(ctx, tx, ty, tx + hit.dirX * alen, ty + hit.dirY * alen, "rgba(255,210,80,0.98)", scale);
-      ctx.restore();
-    } else {
-      // Green target reticle at the end (normal mode).
-      const end = pts[pts.length - 1];
-      ctx.strokeStyle = "rgba(90,235,120,0.95)";
-      ctx.lineWidth = Math.max(1.5, scale * 0.5);
-      ctx.shadowColor = "rgba(90,235,120,0.8)";
-      ctx.shadowBlur = 10;
-      ctx.beginPath();
-      ctx.arc(px(end.x), py(end.y), BALL_R * scale, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-    }
-
-    // Near max power: fire + smoke billow out behind the cue ball like a thruster.
+    // Near max power: fire billows out behind the cue ball like a thruster.
     if (aim.power > 0.9 && !REDUCE_MOTION) drawFire(ctx, px(cue.x), py(cue.y), -aim.dirX, -aim.dirY, aim.power, scale);
 
-    // Cue stick behind the ball, pulled back with power.
-    drawCue(ctx, px(cue.x), py(cue.y), -aim.dirX, -aim.dirY, aim.power, scale);
+    // Cue stick behind the ball, pulled back with power (always shown).
+    drawCue(ctx, px(cue.x), py(cue.y), -aim.dirX, -aim.dirY, aim.power, scale, stick);
   }
 }
 
@@ -1089,6 +1325,7 @@ function drawCue(
   by: number,
   power: number,
   scale: number,
+  stick: StickMaterial,
 ) {
   const gap = BALL_R * scale + scale * 1.5 + power * scale * 10;
   const len = scale * 90;
@@ -1100,11 +1337,11 @@ function drawCue(
   const perpY = bx;
   const wt = Math.max(1.4, scale * 0.7);
   const wb = Math.max(2.4, scale * 1.5);
+  // Shaft gradient runs light at the tip -> dark at the butt, per stick material.
   const grad = ctx.createLinearGradient(tipX, tipY, buttX, buttY);
-  grad.addColorStop(0, "#f0dca6");
-  grad.addColorStop(0.12, "#e8c98f");
-  grad.addColorStop(0.6, "#b8894f");
-  grad.addColorStop(1, "#6b4a2a");
+  grad.addColorStop(0, stick.shaft[0]);
+  grad.addColorStop(0.55, stick.shaft[1]);
+  grad.addColorStop(1, stick.shaft[2]);
   ctx.beginPath();
   ctx.moveTo(tipX + perpX * wt, tipY + perpY * wt);
   ctx.lineTo(buttX + perpX * wb, buttY + perpY * wb);
@@ -1118,6 +1355,19 @@ function drawCue(
   ctx.fill();
   ctx.shadowBlur = 0;
   ctx.shadowOffsetY = 0;
+  // Grip wrap near the butt.
+  const g0X = buttX - bx * len * 0.32;
+  const g0Y = buttY - by * len * 0.32;
+  const gwT = wb * 0.92;
+  const gwB = wb;
+  ctx.beginPath();
+  ctx.moveTo(g0X + perpX * gwT, g0Y + perpY * gwT);
+  ctx.lineTo(buttX + perpX * gwB, buttY + perpY * gwB);
+  ctx.lineTo(buttX - perpX * gwB, buttY - perpY * gwB);
+  ctx.lineTo(g0X - perpX * gwT, g0Y - perpY * gwT);
+  ctx.closePath();
+  ctx.fillStyle = stick.wrap;
+  ctx.fill();
   // Blue chalk tip.
   dot(ctx, tipX, tipY, wt * 1.05, "#3a7bd0");
 }

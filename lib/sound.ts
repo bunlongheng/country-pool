@@ -1,8 +1,8 @@
-// Sound engine for Country Pool. The sound EFFECTS (cue, clicks, rail, pocket, scratch,
-// win) are synthesised at runtime with Web Audio - no SFX files. The background music is
-// a single local file (public/theme.mp3) played through a native <audio> element, served
-// same-origin so the CSP stays 'self'. Every call is wrapped so audio can never throw or
-// break play, and the mute toggle silences both the synth and the theme.
+// Sound engine for Country Pool. Everything is synthesised at runtime with Web Audio -
+// the sound EFFECTS (cue, clicks, rail, pocket, scratch, win) and the background music
+// (an original slow-jazz trio, one progression per stage). No audio files, no CDN, no
+// licensing; the CSP stays 'self'. Every call is wrapped so audio can never throw or
+// break play, and the mute toggle silences both.
 
 const STORE_KEY = "cp-muted";
 
@@ -24,7 +24,7 @@ function ensure(): AudioContext | null {
         window.AudioContext ||
         (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AC) return null;
-      ctx = new AC();
+      ctx = new AC({ latencyHint: "interactive" }); // lowest output latency for snappy SFX
       master = ctx.createGain();
       master.gain.value = muted ? 0 : 0.9;
       master.connect(ctx.destination);
@@ -86,32 +86,159 @@ function knock(dur: number, gain: number, freq: number) {
   src.stop(t0 + dur + 0.02);
 }
 
-// --- Background music: the theme clip, served as a local file so the CSP stays
-// 'self'. Started on the first user gesture, looped, and silenced by the same mute
-// toggle as the sound effects. A native <audio> element (not WebAudio) keeps it simple
-// and reliable across browsers.
-let theme: HTMLAudioElement | null = null;
+// --- Background music: an original slow-jazz trio (soft piano comp + upright walking
+// bass), fully synthesised - no audio files, no CDN, no licensing. Each stage gets its
+// own jazz progression + tempo; setStage() switches it on the next bar. Routed through
+// `master`, so the existing mute toggle silences it too.
+let musicGain: GainNode | null = null;
+let musicTimer: ReturnType<typeof setInterval> | null = null;
+let musicStep = 0;
+let musicNextT = 0;
 
-function startTheme() {
-  if (typeof window === "undefined") return;
-  try {
-    if (!theme) {
-      theme = new Audio("/theme.mp3");
-      theme.loop = true;
-      theme.preload = "auto";
-      theme.volume = 0.28; // background theme sits well under the sound effects
-    }
-    theme.muted = muted;
-    if (theme.paused) void theme.play().catch(() => {}); // ignore autoplay block
-  } catch {
-    /* audio unavailable - the synthesised effects still play */
+// 7th/9th chord voicings (Hz), comfy piano range.
+const CH: Record<string, number[]> = {
+  Cmaj7: [261.63, 329.63, 392.0, 493.88],
+  Dm7: [293.66, 349.23, 440.0, 523.25],
+  G7: [196.0, 246.94, 293.66, 349.23],
+  Am7: [220.0, 261.63, 329.63, 392.0],
+  A7: [220.0, 277.18, 329.63, 392.0],
+  Fmaj7: [174.61, 220.0, 261.63, 329.63],
+  Gm7: [196.0, 233.08, 293.66, 349.23],
+  C7: [261.63, 329.63, 392.0, 466.16],
+  F7: [174.61, 220.0, 261.63, 311.13],
+  Bbmaj7: [233.08, 293.66, 349.23, 440.0],
+  Cm7: [261.63, 311.13, 392.0, 466.16],
+  Gmaj7: [196.0, 246.94, 293.66, 369.99],
+  Em7: [164.81, 196.0, 246.94, 293.66],
+  D7: [146.83, 185.0, 220.0, 261.63],
+  E7: [164.81, 207.65, 246.94, 293.66],
+  Dmaj9: [146.83, 185.0, 220.0, 277.18, 329.63],
+  Amaj9: [110.0, 138.59, 164.81, 207.65, 246.94],
+};
+
+type Tune = { bpm: number; prog: string[] };
+const TUNES: Record<string, Tune> = {
+  pool: { bpm: 82, prog: ["Dm7", "G7", "Cmaj7", "Am7"] }, // smoky lounge ii-V-I
+  soccer: { bpm: 96, prog: ["Cmaj7", "A7", "Dm7", "G7"] },
+  football: { bpm: 88, prog: ["Fmaj7", "Dm7", "Gm7", "C7"] },
+  basketball: { bpm: 100, prog: ["C7", "F7", "C7", "G7"] }, // bluesy
+  baseball: { bpm: 78, prog: ["Bbmaj7", "Gm7", "Cm7", "F7"] },
+  tennis: { bpm: 92, prog: ["Gmaj7", "Em7", "Am7", "D7"] },
+  pingpong: { bpm: 110, prog: ["Am7", "D7", "Gmaj7", "E7"] },
+  swim: { bpm: 68, prog: ["Dmaj9", "Amaj9", "Dmaj9", "Amaj9"] }, // dreamy
+};
+let currentTune: Tune = TUNES.pool;
+
+// A struck-piano voice: sharp attack, exponential decay, a couple of soft partials.
+function piano(freq: number, t: number, dur: number, gain: number) {
+  if (!ctx || !musicGain) return;
+  for (const [mult, g] of [[1, gain], [2, gain * 0.32], [3, gain * 0.1]] as const) {
+    const osc = ctx.createOscillator();
+    const env = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq * mult;
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0002, g), t + 0.006);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(env);
+    env.connect(musicGain);
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
   }
+}
+
+// Rounded upright-bass voice.
+function bass(freq: number, t: number, dur: number, gain: number) {
+  if (!ctx || !musicGain) return;
+  const osc = ctx.createOscillator();
+  const env = ctx.createGain();
+  osc.type = "triangle";
+  osc.frequency.value = freq;
+  env.gain.setValueAtTime(0.0001, t);
+  env.gain.exponentialRampToValueAtTime(gain, t + 0.02);
+  env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.connect(env);
+  env.connect(musicGain);
+  osc.start(t);
+  osc.stop(t + dur + 0.02);
+}
+
+function scheduleMusic() {
+  if (!ctx || !musicGain) return;
+  while (musicNextT < ctx.currentTime + 0.3) {
+    const beat = 60 / currentTune.bpm;
+    const bar = Math.floor(musicStep / 4) % currentTune.prog.length;
+    const beatIdx = musicStep % 4;
+    const chord = CH[currentTune.prog[bar]] ?? CH.Cmaj7;
+    const t = musicNextT;
+    const root = chord[0] / 2;
+    const fifth = chord[Math.min(2, chord.length - 1)] / 2;
+    // Walking bass: root, up a step, fifth, back - laid-back quarter notes.
+    const walk = [root, root * 1.122, fifth, fifth * 0.944][beatIdx];
+    bass(walk, t, beat * 0.92, 0.1);
+    if (beatIdx === 0) {
+      // Full chord comped with a tiny roll (piano feel).
+      chord.forEach((f, i) => piano(f, t + i * 0.012, beat * 2.4, Math.max(0.012, 0.05 - i * 0.006)));
+    } else if (beatIdx === 2) {
+      // Soft upper-voice stab on the backbeat.
+      chord.slice(1).forEach((f) => piano(f, t + 0.02, beat * 1.1, 0.026));
+    }
+    musicStep++;
+    musicNextT += beat;
+  }
+}
+
+function startMusic() {
+  const c = ensure();
+  if (!c || !master || musicTimer) return;
+  if (!musicGain) {
+    musicGain = c.createGain();
+    musicGain.gain.value = 0.5; // sits under the sound effects
+    musicGain.connect(master);
+  }
+  musicStep = 0;
+  musicNextT = c.currentTime + 0.15;
+  scheduleMusic();
+  musicTimer = setInterval(scheduleMusic, 60);
 }
 
 export const sound = {
   unlock() {
     ensure();
-    startTheme(); // begin the theme music on the first user interaction
+    startMusic(); // begin the jazz trio on the first user interaction
+  },
+  // Switch the background progression to match the current stage (next bar).
+  setStage(key: string) {
+    if (TUNES[key]) currentTune = TUNES[key];
+  },
+  // Stop the looping background music (e.g. on Game Over).
+  stopMusic() {
+    if (musicTimer) {
+      clearInterval(musicTimer);
+      musicTimer = null;
+    }
+  },
+  // Game over: cut the jazz and play a somber descending motif.
+  gameOver() {
+    this.stopMusic();
+    const notes = [392.0, 349.23, 293.66, 220.0]; // a slow descent
+    notes.forEach((f, i) =>
+      tone({ type: "triangle", from: f, to: f * 0.97, dur: 0.5, gain: 0.24, delay: i * 0.3 }),
+    );
+    tone({ type: "sine", from: 110, to: 78, dur: 1.3, gain: 0.22, delay: 1.05 }); // low final thud
+  },
+  // Speak the country name when its ball is potted (skipped while muted).
+  announce(name: string) {
+    if (muted || typeof window === "undefined" || !window.speechSynthesis) return;
+    try {
+      const u = new SpeechSynthesisUtterance(name);
+      u.rate = 1.05;
+      u.volume = 0.9;
+      window.speechSynthesis.cancel(); // announce the latest, not a backlog on a fast break
+      window.speechSynthesis.speak(u);
+    } catch {
+      /* speech unavailable - ignore */
+    }
   },
   // The cue striking the ball - sharp crack, power 0..1 shapes it. Loudness rises on a
   // steep (quadratic) curve so a soft tap is quiet and a full shot cracks hard; above
@@ -165,7 +292,6 @@ export const sound = {
   setMuted(m: boolean) {
     muted = m;
     if (master && ctx) master.gain.setTargetAtTime(m ? 0 : 0.9, ctx.currentTime, 0.01);
-    if (theme) theme.muted = m;
     if (typeof window !== "undefined") window.localStorage?.setItem(STORE_KEY, m ? "1" : "0");
     listeners.forEach((fn) => fn(m));
   },

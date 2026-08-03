@@ -42,7 +42,7 @@ body {
    1.5-turn spin so it reads as a real roll (not a wobble), then settles. */
 @keyframes cp-roll-in {
   0% {
-    transform: translateX(280%) rotate(540deg);
+    transform: translateX(-280%) rotate(-540deg);
     opacity: 0;
   }
   30% {
@@ -90,6 +90,31 @@ body {
   color: transparent;
   -webkit-text-fill-color: transparent;
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5));
+}
+
+/* Win-screen confetti: fall from the top with a spin. */
+@keyframes cp-confetti {
+  0% {
+    transform: translateY(-15vh) rotate(0deg);
+    opacity: 0.95;
+  }
+  100% {
+    transform: translateY(110vh) rotate(720deg);
+    opacity: 0.95;
+  }
+}
+
+/* Scratch = FPS-style red damage flash across the whole screen (one quick pulse). */
+@keyframes cp-damage {
+  0% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.cp-damage {
+  animation: cp-damage 0.6s ease-out both;
 }
 
 /* Respect motion-sensitivity: drop the looping/large animations. */

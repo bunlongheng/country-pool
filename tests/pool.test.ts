@@ -11,6 +11,7 @@ import {
   MAX_SHOT,
   allStopped,
   aimPath,
+  planShot,
   predictHit,
   rack,
   setBallSize,
@@ -131,6 +132,30 @@ test("predictHit finds the ball dead ahead and points it straight on", () => {
 test("predictHit returns null when the aim line misses every ball", () => {
   const target = cue({ id: 1, ci: 2, isCue: false, x: 80, y: 90 });
   assert.equal(predictHit(20, 10, 1, 0, [target]), null);
+});
+
+test("planShot lines up a dead-straight pot and, when fired, actually sinks the ball", () => {
+  // Cue at left-middle, one object ball directly between it and the top-left corner
+  // pocket (all three collinear) => a straight-in shot the AI must pick.
+  const cueBall = cue({ id: 0, x: 40, y: 25 });
+  const target = cue({ id: 1, ci: 5, isCue: false, x: 20, y: 12.5 });
+  const balls = [cueBall, target];
+  const plan = planShot(balls);
+  assert.ok(plan, "should find a shot");
+  assert.equal(plan!.target.id, 1);
+  assert.ok(plan!.viable, "a clear straight line is a viable pot");
+  assert.ok(plan!.straightness > 0.95, `near dead-straight, got ${plan!.straightness}`);
+  // Fire the plan and simulate: the target should drop into the corner.
+  shoot(cueBall, plan!.dirX, plan!.dirY, plan!.power);
+  let sunk = false;
+  for (let i = 0; i < 60 * 10 && !sunk; i++) {
+    if (stepWorld(balls, 1 / 60).pocketed.includes(1)) sunk = true;
+  }
+  assert.ok(sunk, "the AI's straight shot should pot the target");
+});
+
+test("planShot returns null when only the cue ball is left", () => {
+  assert.equal(planShot([cue({ id: 0 })]), null);
 });
 
 test("rack lays out 1 cue + 15 object balls, all on the table", () => {
