@@ -52,6 +52,10 @@ type MoveEntry = {
   result: string; // "potted N" | "missed" | "scratch" | "" (pending)
   potBase: number; // pots before this shot, to attribute the result at settle
   deathBase: number;
+  ox: number; // cue position + aim direction at the shot (to redraw the helper line in replay)
+  oy: number;
+  dirX: number;
+  dirY: number;
 };
 
 // A human name for a pocket, from its table coords (for the move log).
@@ -239,6 +243,7 @@ export default function PoolTable() {
   const [segments, setSegments] = useState<{ shot: number; start: number; end: number }[]>([]); // one per move
   const [replayTray, setReplayTray] = useState<{ id: number; code: string }[]>([]); // potted-so-far at the replay frame
   const replayTrayLenRef = useRef(-1); // last tray length pushed, to avoid per-frame re-renders
+  const replayGuideRef = useRef<{ ox: number; oy: number; dirX: number; dirY: number; power: number } | null>(null); // the shot's original helper line
   // Pause/resume: freezes physics, the AI, and the timer (paused time is not counted).
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(false);
@@ -320,6 +325,10 @@ export default function PoolTable() {
           result: "",
           potBase: pottedRef.current,
           deathBase: deathsRef.current,
+          ox: cue.x,
+          oy: cue.y,
+          dirX: plan.dirX,
+          dirY: plan.dirY,
         });
         setMoveLog([...moveLogRef.current]);
       }
@@ -434,14 +443,15 @@ export default function PoolTable() {
 
   const exitReplay = useCallback(() => {
     replayRef.current = false;
+    replayGuideRef.current = null;
     setReplay(false);
     dirtyRef.current = true;
   }, []);
 
-  // Play a single move's segment, stopping at its end (the per-move play button).
+  // Jump to a move and play on through the following moves (auto-advance 1 -> 2 -> ...).
   const playMove = useCallback((seg: { shot: number; start: number; end: number }) => {
     replayHeadRef.current = seg.start;
-    replayStopRef.current = seg.end;
+    replayStopRef.current = framesRef.current.length - 1; // continue into the next moves
     replayPlayingRef.current = true;
     setReplayPlaying(true);
     setReplayIdx(seg.start);
@@ -670,8 +680,12 @@ export default function PoolTable() {
           replayTrayLenRef.current = tray.length;
           setReplayTray(tray);
         }
+        const sn = frameShotRef.current[idx] ?? 0;
         setReplayIdx(idx); // React dedupes identical values, so this is cheap
-        setReplayShot(frameShotRef.current[idx] ?? 0);
+        setReplayShot(sn);
+        // Show the original helper line used for this shot.
+        const mv = moveLogRef.current.find((m) => m.n === sn);
+        replayGuideRef.current = mv ? { ox: mv.ox, oy: mv.oy, dirX: mv.dirX, dirY: mv.dirY, power: mv.power } : null;
         dirtyRef.current = true;
       }
 
@@ -796,7 +810,7 @@ export default function PoolTable() {
       const anyFlash = cueFlashRef.current > 0 || flash.some((f) => f !== 0);
       const active = moving || aimRef.current.active || anyFlash;
       if (active || dirtyRef.current) {
-        drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, cueFlashRef.current, clothRef.current, railRef.current, stickRef.current);
+        drawFelt(ctx, felt, trRef.current, balls, aimRef.current, moving, kidsRef.current, flash, cueFlashRef.current, clothRef.current, railRef.current, stickRef.current, replayGuideRef.current);
         if (!active) dirtyRef.current = false;
       }
     };
@@ -874,6 +888,10 @@ export default function PoolTable() {
           result: "",
           potBase: pottedRef.current,
           deathBase: deathsRef.current,
+          ox: cue.x,
+          oy: cue.y,
+          dirX: a.dirX,
+          dirY: a.dirY,
         });
         setMoveLog([...moveLogRef.current]);
       }
@@ -1239,9 +1257,9 @@ export default function PoolTable() {
       {replay && frameCount > 0 && (
         portrait ? (
           <div className="pointer-events-none absolute inset-x-0 z-40 px-2" style={{ bottom: HUD_BOTTOM + 8 }}>
-            <div className="pointer-events-auto mx-auto flex w-full max-w-xl flex-col gap-1.5 rounded-2xl bg-black/85 p-2.5 shadow-2xl ring-1 ring-white/15 backdrop-blur-md">
+            <div className="pointer-events-auto mx-auto flex w-full max-w-xl flex-col gap-1.5 rounded-2xl bg-black/85 px-3.5 pb-3 pt-3.5 shadow-2xl ring-1 ring-white/15 backdrop-blur-md">
               <div className="flex items-center gap-2">
-                <span className="title-gold shrink-0 font-display text-base font-bold leading-none">Replay</span>
+                <span className="title-gold shrink-0 font-display text-base font-bold leading-tight">Replay</span>
                 {replayMove && (
                   <span className="min-w-0 flex-1 truncate text-[11px] text-white/70">
                     <b className="text-[#f3d888]">Move {replayMove.n}{replayMove.result ? ` - ${replayMove.result}` : ""}</b>
@@ -1309,9 +1327,9 @@ export default function PoolTable() {
           </div>
         ) : (
           <div className="pointer-events-none absolute inset-y-0 left-0 z-40 flex max-h-full flex-col p-2" style={{ paddingTop: "max(8px,env(safe-area-inset-top))" }}>
-            <div className="pointer-events-auto flex max-h-full w-[190px] flex-col gap-2 overflow-hidden rounded-2xl bg-black/80 p-3 shadow-2xl ring-1 ring-white/15 backdrop-blur-md sm:w-[210px]">
-              <div className="flex items-center justify-between">
-                <span className="title-gold font-display text-lg font-bold leading-none">Replay</span>
+            <div className="pointer-events-auto flex max-h-full w-[190px] flex-col gap-2 overflow-hidden rounded-2xl bg-black/80 px-3.5 pb-3.5 pt-4 shadow-2xl ring-1 ring-white/15 backdrop-blur-md sm:w-[210px]">
+              <div className="flex items-center justify-between pb-0.5">
+                <span className="title-gold font-display text-lg font-bold leading-tight">Replay</span>
                 <span className="font-display text-xs font-bold tabular-nums text-white/60">{fmtDur((replayIdx / REPLAY_FPS) * 1000)}</span>
               </div>
 
@@ -1560,6 +1578,7 @@ function drawFelt(
   cloth: [string, string, string],
   mat: RailMaterial,
   stick: StickMaterial,
+  replayGuide: { ox: number; oy: number; dirX: number; dirY: number; power: number } | null,
 ) {
   if (!canvas.width || !canvas.height) return; // not sized yet (avoids non-finite gradients)
   const rectW = canvas.getBoundingClientRect().width;
@@ -1797,6 +1816,37 @@ function drawFelt(
 
     // Cue stick behind the ball, pulled back with power (always shown).
     drawCue(ctx, px(cue.x), py(cue.y), -aim.dirX, -aim.dirY, aim.power, scale, stick);
+  }
+
+  // Replay: redraw the ORIGINAL helper line used for the shot being played (gold, from
+  // the cue's position at the moment of that shot) so you can see the intended line.
+  if (replayGuide) {
+    const reach = TABLE.w * (0.4 + replayGuide.power * 0.9);
+    const pts = aimPath(replayGuide.ox, replayGuide.oy, replayGuide.dirX, replayGuide.dirY, reach, 1);
+    const dotR = Math.max(1, scale * 0.55);
+    const step = scale * 3;
+    let carry = BALL_R * scale + step;
+    for (let i = 1; i < pts.length; i++) {
+      const ax = px(pts[i - 1].x), ay = py(pts[i - 1].y);
+      const bx = px(pts[i].x), by = py(pts[i].y);
+      const segLen = Math.hypot(bx - ax, by - ay);
+      let d = carry;
+      while (d < segLen) {
+        const t = d / segLen;
+        dot(ctx, ax + (bx - ax) * t, ay + (by - ay) * t, dotR, "rgba(243,216,136,0.95)");
+        d += step;
+      }
+      carry = d - segLen;
+    }
+    const end = pts[pts.length - 1];
+    ctx.strokeStyle = "rgba(243,216,136,0.95)";
+    ctx.lineWidth = Math.max(1.5, scale * 0.5);
+    ctx.shadowColor = "rgba(243,216,136,0.8)";
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(px(end.x), py(end.y), BALL_R * scale, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
   }
 }
 
