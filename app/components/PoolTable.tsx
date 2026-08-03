@@ -237,6 +237,8 @@ export default function PoolTable() {
   const [replayPlaying, setReplayPlaying] = useState(true);
   const [replaySpeed, setReplaySpeed] = useState(0.5);
   const [segments, setSegments] = useState<{ shot: number; start: number; end: number }[]>([]); // one per move
+  const [replayTray, setReplayTray] = useState<{ id: number; code: string }[]>([]); // potted-so-far at the replay frame
+  const replayTrayLenRef = useRef(-1); // last tray length pushed, to avoid per-frame re-renders
   // Pause/resume: freezes physics, the AI, and the timer (paused time is not counted).
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(false);
@@ -260,7 +262,7 @@ export default function PoolTable() {
   const aiRef = useRef(false);
   const aiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aiShootRef = useRef<() => void>(() => {});
-  const [aiPlan, setAiPlan] = useState<{ country: string; precision: number; power: number; viable: boolean } | null>(null);
+  const [aiPlan, setAiPlan] = useState<{ country: string; pocket: string; precision: number; power: number; viable: boolean; reason: string } | null>(null);
 
   const aiShoot = useCallback(() => {
     if (aiTimerRef.current) {
@@ -282,9 +284,11 @@ export default function PoolTable() {
     setPower(plan.power);
     setAiPlan({
       country: COUNTRIES[plan.target.ci]?.name ?? "the ball",
+      pocket: pocketLabel(plan.pocket),
       precision: plan.straightness,
       power: plan.power,
       viable: plan.viable,
+      reason: plan.reason,
     });
     dirtyRef.current = true;
     // Phase 2 - STRIKE: fire after a beat so the line is watchable/learnable.
@@ -386,7 +390,7 @@ export default function PoolTable() {
           aimRef.current.dirY = plan.dirY;
           aimRef.current.power = plan.power;
           aimRef.current.active = true;
-          setAiPlan({ country: COUNTRIES[plan.target.ci]?.name ?? "the ball", precision: plan.straightness, power: plan.power, viable: plan.viable });
+          setAiPlan({ country: COUNTRIES[plan.target.ci]?.name ?? "the ball", pocket: pocketLabel(plan.pocket), precision: plan.straightness, power: plan.power, viable: plan.viable, reason: plan.reason });
         }
       }
     } else {
@@ -414,6 +418,8 @@ export default function PoolTable() {
     }
     setSegments(segs);
     setFrameCount(framesRef.current.length);
+    replayTrayLenRef.current = -1; // recompute the tray on the first replay frame
+    setReplayTray([]);
     replayHeadRef.current = 0;
     replayStopRef.current = framesRef.current.length - 1; // play the whole reel
     replayPlayingRef.current = true;
@@ -521,6 +527,8 @@ export default function PoolTable() {
     setReplay(false);
     setFrameCount(0);
     setSegments([]);
+    setReplayTray([]);
+    replayTrayLenRef.current = -1;
     dirtyRef.current = true;
     setGame(buildRack());
     // Keep auto-playing the new rack if AI mode is on.
@@ -647,12 +655,20 @@ export default function PoolTable() {
         }
         const idx = Math.max(0, Math.min(frames.length - 1, Math.floor(replayHeadRef.current)));
         const f = frames[idx];
+        const sunkIds = new Set<number>();
         for (let i = 0; i < balls.length; i++) {
           balls[i].x = f[i * 3];
           balls[i].y = f[i * 3 + 1];
           balls[i].sunk = f[i * 3 + 2] > 0.5;
           balls[i].vx = 0;
           balls[i].vy = 0;
+          if (balls[i].sunk && !balls[i].isCue) sunkIds.add(balls[i].id);
+        }
+        // Tray must match the frame: only the balls potted so far (in pot order).
+        const tray = pottedListRef.current.filter((e) => sunkIds.has(e.id));
+        if (tray.length !== replayTrayLenRef.current) {
+          replayTrayLenRef.current = tray.length;
+          setReplayTray(tray);
         }
         setReplayIdx(idx); // React dedupes identical values, so this is cheap
         setReplayShot(frameShotRef.current[idx] ?? 0);
@@ -933,7 +949,7 @@ export default function PoolTable() {
         style={{ height: HUD_BOTTOM, paddingBottom: "max(10px,env(safe-area-inset-bottom))" }}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-          {pottedCodes
+          {(replay ? replayTray : pottedCodes)
             .slice(-12)
             .reverse()
             .map(({ id, code }) => (
@@ -942,7 +958,7 @@ export default function PoolTable() {
         </div>
 
         <div className="flex shrink-0 items-center gap-6 sm:gap-8">
-          <Stat label="Score" value={potted} />
+          <Stat label="Score" value={replay ? replayTray.length : potted} />
           <Stat label="Shots" value={shots} />
           <Stat label="Died" value={deaths} />
           <Stat label="Time" value={fmtDur(durMs)} />
@@ -982,19 +998,22 @@ export default function PoolTable() {
           precision + power, so you can learn the line before it strikes. */}
       {ai && aiPlan && !won && !lost && (
         <div
-          className="pointer-events-none absolute left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/75 px-3.5 py-1.5 text-xs font-semibold text-white shadow-lg ring-1 ring-white/15 backdrop-blur"
+          className="pointer-events-none absolute left-1/2 z-30 flex max-w-[92%] -translate-x-1/2 flex-col items-center gap-0.5 rounded-2xl bg-black/78 px-4 py-2 text-center text-xs font-semibold text-white shadow-lg ring-1 ring-white/15 backdrop-blur"
           style={{ top: HUD_TOP + 6 }}
         >
-          <span aria-hidden="true">🤖</span>
-          {aiPlan.viable ? (
-            <span>
-              Potting <b className="text-[#f3d888]">{aiPlan.country}</b> - precision {Math.round(aiPlan.precision * 100)}% - power {Math.round(aiPlan.power * 100)}%
-            </span>
-          ) : (
-            <span>
-              No clean pot - safety off <b className="text-[#f3d888]">{aiPlan.country}</b>
-            </span>
-          )}
+          <div className="flex items-center gap-1.5">
+            <span aria-hidden="true">🤖</span>
+            {aiPlan.viable ? (
+              <span>
+                Potting <b className="text-[#f3d888]">{aiPlan.country}</b> into <b className="text-[#f3d888]">{aiPlan.pocket}</b> - precision {Math.round(aiPlan.precision * 100)}% - power {Math.round(aiPlan.power * 100)}%
+              </span>
+            ) : (
+              <span>
+                Safety off <b className="text-[#f3d888]">{aiPlan.country}</b> - power {Math.round(aiPlan.power * 100)}%
+              </span>
+            )}
+          </div>
+          <div className="text-[11px] font-normal text-white/60">{aiPlan.reason}</div>
         </div>
       )}
 
