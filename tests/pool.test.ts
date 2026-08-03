@@ -60,6 +60,27 @@ test("a ball never leaves the table - cushions keep it in bounds", () => {
   }
 });
 
+test("no ball is ever shoved over the frame - full-rack breaks stay on the felt", () => {
+  // Collisions near a corner (where cushion bounces are skipped) used to push a ball
+  // clean past the rail onto the wooden frame. Break a full rack from many angles and
+  // assert every live ball stays inside the play surface on every frame.
+  const dt = 1 / 60;
+  for (let a = 0; a < 24; a++) {
+    const balls = rack(Array.from({ length: 15 }, (_, i) => i));
+    const c = balls.find((b) => b.isCue)!;
+    const ang = (a / 24) * Math.PI * 2;
+    shoot(c, Math.cos(ang) + 1e-3, Math.sin(ang) + 1e-3, 1);
+    for (let i = 0; i < 60 * 15 && !allStopped(balls); i++) {
+      stepWorld(balls, dt);
+      for (const b of balls) {
+        if (b.sunk) continue;
+        assert.ok(b.x >= 0 && b.x <= TABLE.w, `ball ${b.id} over frame in x: ${b.x.toFixed(2)}`);
+        assert.ok(b.y >= 0 && b.y <= TABLE.h, `ball ${b.id} over frame in y: ${b.y.toFixed(2)}`);
+      }
+    }
+  }
+});
+
 test("a ball rolled into a corner pocket is sunk", () => {
   const b = cue({ x: TABLE.w * 0.5, y: 50 });
   // Aim straight at the top-left corner pocket (0,0).

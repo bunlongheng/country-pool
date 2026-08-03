@@ -148,10 +148,23 @@ function substep(balls: Ball[], dt: number, ev: StepEvents): void {
     }
   }
 
-  // Safety net: a ball that slipped through a recessed side-pocket mouth without
-  // dropping is bounced back onto the felt rather than lost off-table past the rail.
+  // Safety net: a ball that slipped past a rail - through a recessed pocket mouth or
+  // shoved there by a collision near a corner (where cushion bounces are skipped) - is
+  // bounced back onto the felt rather than left sitting on the wooden frame. Covers both
+  // axes so a ball can never end up over the frame. A ball genuinely dropping into a
+  // pocket is already sunk (captured within POCKET_R) before it reaches the frame edge,
+  // so this never steals a real pot.
   for (const b of balls) {
     if (b.sunk) continue;
+    if (b.x < 0) {
+      b.x = BALL_R;
+      b.vx = Math.abs(b.vx) * RAIL_BOUNCE;
+      ev.rails++;
+    } else if (b.x > TABLE.w) {
+      b.x = TABLE.w - BALL_R;
+      b.vx = -Math.abs(b.vx) * RAIL_BOUNCE;
+      ev.rails++;
+    }
     if (b.y < 0) {
       b.y = BALL_R;
       b.vy = Math.abs(b.vy) * RAIL_BOUNCE;
