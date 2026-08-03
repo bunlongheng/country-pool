@@ -224,15 +224,19 @@ export default function PoolTable() {
   const moveLogRef = useRef<MoveEntry[]>([]);
   // Full-game recorder -> slow-mo rewind. Only the current game is kept (cleared on reset).
   const framesRef = useRef<Float32Array[]>([]); // per-frame [x,y,sunk] * ballCount, table units
+  const frameShotRef = useRef<number[]>([]); // shot number each frame belongs to (for replay context)
+  const [replayShot, setReplayShot] = useState(0); // shot number at the current replay frame
   const [replay, setReplay] = useState(false);
   const replayRef = useRef(false);
   const replayHeadRef = useRef(0); // float playhead (frame index)
   const replayPlayingRef = useRef(true);
   const replaySpeedRef = useRef(0.5);
+  const replayStopRef = useRef(0); // frame index to stop playback at (one move, or the reel end)
   const [replayIdx, setReplayIdx] = useState(0); // current frame (drives the scrubber)
   const [frameCount, setFrameCount] = useState(0);
   const [replayPlaying, setReplayPlaying] = useState(true);
   const [replaySpeed, setReplaySpeed] = useState(0.5);
+  const [segments, setSegments] = useState<{ shot: number; start: number; end: number }[]>([]); // one per move
   // Pause/resume: freezes physics, the AI, and the timer (paused time is not counted).
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(false);
@@ -397,16 +401,26 @@ export default function PoolTable() {
     }
   }, []);
 
-  // ---- Slow-mo replay of the recorded game ----
+  // ---- Slow-mo replay: a World-Cup-style highlight reel, one segment per move ----
   const enterReplay = useCallback(() => {
-    if (!framesRef.current.length) return;
+    const fs = frameShotRef.current;
+    if (!fs.length) return;
+    // Group contiguous frames of the same shot into per-move segments (Move 1, Move 2 ...).
+    const segs: { shot: number; start: number; end: number }[] = [];
+    for (let i = 0; i < fs.length; i++) {
+      const last = segs[segs.length - 1];
+      if (last && last.shot === fs[i]) last.end = i;
+      else segs.push({ shot: fs[i], start: i, end: i });
+    }
+    setSegments(segs);
+    setFrameCount(framesRef.current.length);
     replayHeadRef.current = 0;
+    replayStopRef.current = framesRef.current.length - 1; // play the whole reel
     replayPlayingRef.current = true;
     replaySpeedRef.current = 0.5; // default to slow-mo
     setReplaySpeed(0.5);
     setReplayPlaying(true);
     setReplayIdx(0);
-    setFrameCount(framesRef.current.length);
     replayRef.current = true;
     setReplay(true);
     dirtyRef.current = true;
@@ -418,15 +432,31 @@ export default function PoolTable() {
     dirtyRef.current = true;
   }, []);
 
+  // Play a single move's segment, stopping at its end (the per-move play button).
+  const playMove = useCallback((seg: { shot: number; start: number; end: number }) => {
+    replayHeadRef.current = seg.start;
+    replayStopRef.current = seg.end;
+    replayPlayingRef.current = true;
+    setReplayPlaying(true);
+    setReplayIdx(seg.start);
+    setReplayShot(seg.shot);
+    dirtyRef.current = true;
+  }, []);
+
+  // Play the whole reel from the start (or resume/pause).
   const toggleReplayPlay = useCallback(() => {
     const v = !replayPlayingRef.current;
-    if (v && replayHeadRef.current >= framesRef.current.length - 1) replayHeadRef.current = 0; // replay from start
+    if (v) {
+      replayStopRef.current = framesRef.current.length - 1; // full reel
+      if (replayHeadRef.current >= framesRef.current.length - 1) replayHeadRef.current = 0; // from start if ended
+    }
     replayPlayingRef.current = v;
     setReplayPlaying(v);
   }, []);
 
   const scrubReplay = useCallback((idx: number) => {
     replayHeadRef.current = idx;
+    replayStopRef.current = framesRef.current.length - 1; // scrubbing frees the stop to the reel end
     replayPlayingRef.current = false;
     setReplayPlaying(false);
     setReplayIdx(idx);
@@ -486,9 +516,11 @@ export default function PoolTable() {
     setMoveLog([]);
     // Drop the previous game's recording - only the current game is ever kept.
     framesRef.current = [];
+    frameShotRef.current = [];
     replayRef.current = false;
     setReplay(false);
     setFrameCount(0);
+    setSegments([]);
     dirtyRef.current = true;
     setGame(buildRack());
     // Keep auto-playing the new rack if AI mode is on.
@@ -600,19 +632,21 @@ export default function PoolTable() {
       acc += frameDt; // clamp big stalls; drop excess time
       const { ox, oy, scale } = trRef.current;
 
-      // Replay mode: drive the balls straight from the recording (no physics).
+      // Replay mode: drive the balls straight from the recording (no physics). Playback
+      // stops at replayStopRef (a single move's end, or the end of the whole reel).
       if (replayRef.current && framesRef.current.length) {
         const frames = framesRef.current;
         if (replayPlayingRef.current) {
           replayHeadRef.current += replaySpeedRef.current * REPLAY_FPS * frameDt;
-          if (replayHeadRef.current >= frames.length - 1) {
-            replayHeadRef.current = frames.length - 1;
+          const stop = Math.min(frames.length - 1, replayStopRef.current);
+          if (replayHeadRef.current >= stop) {
+            replayHeadRef.current = stop;
             replayPlayingRef.current = false;
             setReplayPlaying(false);
           }
-          setReplayIdx(Math.floor(replayHeadRef.current));
         }
-        const f = frames[Math.max(0, Math.min(frames.length - 1, Math.floor(replayHeadRef.current)))];
+        const idx = Math.max(0, Math.min(frames.length - 1, Math.floor(replayHeadRef.current)));
+        const f = frames[idx];
         for (let i = 0; i < balls.length; i++) {
           balls[i].x = f[i * 3];
           balls[i].y = f[i * 3 + 1];
@@ -620,6 +654,8 @@ export default function PoolTable() {
           balls[i].vx = 0;
           balls[i].vy = 0;
         }
+        setReplayIdx(idx); // React dedupes identical values, so this is cheap
+        setReplayShot(frameShotRef.current[idx] ?? 0);
         dirtyRef.current = true;
       }
 
@@ -666,6 +702,7 @@ export default function PoolTable() {
             f[i * 3 + 2] = balls[i].sunk ? 1 : 0;
           }
           framesRef.current.push(f);
+          frameShotRef.current.push(shotsRef.current); // tag this frame with its move number
         }
       }
       // Transition moving -> stopped: settle the turn.
@@ -832,6 +869,7 @@ export default function PoolTable() {
   const dpr = typeof window !== "undefined" ? Math.min(2, window.devicePixelRatio || 1) : 1;
   const pct = Math.round(power * 100);
   const durMs = Math.max(0, elapsedMs); // live rack duration (excludes paused time)
+  const replayMove = replay ? moveLog.find((m) => m.n === replayShot) ?? null : null; // current-move context
 
   return (
     <div className="relative h-full w-full overflow-hidden" style={{ background: "var(--room)" }}>
@@ -1176,14 +1214,49 @@ export default function PoolTable() {
         </div>
       )}
 
+      {/* Replay: current-move context banner up top (only the move being played, not the
+          whole log) so you can follow exactly what is happening. */}
+      {replay && replayMove && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-40 flex justify-center px-4" style={{ top: HUD_TOP + 6 }}>
+          <div className="max-w-xl rounded-2xl bg-black/80 px-4 py-2.5 text-center text-white shadow-xl ring-1 ring-white/15 backdrop-blur-md">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-[#f3d888]">
+              Move {replayMove.n}
+              {replayMove.result ? ` - ${replayMove.result}` : ""}
+            </div>
+            <div className="text-sm font-semibold">
+              {replayMove.who === "AI" ? `${replayMove.target} - ${replayMove.pocket}` : "Your shot"}
+              <span className="font-normal text-white/50">
+                {replayMove.precision != null ? ` - ${Math.round(replayMove.precision * 100)}% straight` : ""} - {Math.round(replayMove.power * 100)}% power
+              </span>
+            </div>
+            {replayMove.who === "AI" && <div className="text-xs text-white/60">{replayMove.reason}</div>}
+          </div>
+        </div>
+      )}
+
       {/* Slow-mo replay controls (table + WebGL balls play underneath, fully visible) */}
       {replay && frameCount > 0 && (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-40 flex flex-col items-center gap-2 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3">
           <div className="pointer-events-auto flex w-full max-w-2xl flex-col gap-2 rounded-2xl bg-black/80 px-4 py-3 shadow-2xl ring-1 ring-white/15 backdrop-blur-md">
+            {/* Per-move highlights: tap a move to play just that shot. */}
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
+              {segments.map((seg) => (
+                <button
+                  key={seg.shot}
+                  onClick={() => playMove(seg)}
+                  className={`flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold transition active:scale-95 ${
+                    replayShot === seg.shot ? "bg-[#f3d888] text-[#231a08]" : "bg-white/10 text-white/75 ring-1 ring-white/20"
+                  }`}
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
+                  Move {seg.shot}
+                </button>
+              ))}
+            </div>
             <div className="flex items-center gap-3">
               <button
                 onClick={toggleReplayPlay}
-                aria-label={replayPlaying ? "Pause" : "Play"}
+                aria-label={replayPlaying ? "Pause" : "Play all"}
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] text-[#231a08] ring-1 ring-[#f3d888] transition active:scale-95"
               >
                 {replayPlaying ? (
