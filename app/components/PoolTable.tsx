@@ -37,7 +37,7 @@ const FLASH_DUR = 0.72; // seconds a pocket blinks green (2 pulses) after a ball
 const CUE_FLASH_DUR = 0.55; // seconds the cue ball blinks white (1 pulse) after a respawn
 const REPLAY_FPS = 20; // recorded frames per second of motion (sampled every 3rd tick)
 const MAX_FRAMES = 12000; // ~10 min of motion; guards memory (only 1 game is ever kept)
-const REPLAY_SPEEDS = [0.25, 0.5, 1, 2]; // slow-mo to 2x for the rewind scrubber
+const REPLAY_SPEEDS = [0.25, 0.5, 1]; // slow-mo playback speeds for the rewind scrubber
 let REDUCE_MOTION = false; // set from matchMedia; skips the canvas fire for motion-sensitive users
 
 // One recorded shot for the end-of-rack move log.
@@ -1214,97 +1214,165 @@ export default function PoolTable() {
         </div>
       )}
 
-      {/* Slow-mo replay: a LEFT vertical panel (moves + reasons + controls) so the table
-          center and its side pockets stay clear. The game plays underneath, fully visible. */}
+      {/* Slow-mo replay. Responsive: on a narrow/portrait phone it sits in the empty band
+          BELOW the table (compact + horizontal) so it never covers the table; on landscape/
+          desktop it is a left vertical panel. The game plays underneath, fully visible. */}
       {replay && frameCount > 0 && (
-        <div className="pointer-events-none absolute inset-y-0 left-0 z-40 flex max-h-full flex-col p-2" style={{ paddingTop: "max(8px,env(safe-area-inset-top))" }}>
-          <div className="pointer-events-auto flex max-h-full w-[190px] flex-col gap-2 overflow-hidden rounded-2xl bg-black/80 p-3 shadow-2xl ring-1 ring-white/15 backdrop-blur-md sm:w-[210px]">
-            <div className="flex items-center justify-between">
-              <span className="title-gold font-display text-lg font-bold leading-none">Replay</span>
-              <span className="font-display text-xs font-bold tabular-nums text-white/60">{fmtDur((replayIdx / REPLAY_FPS) * 1000)}</span>
-            </div>
-
-            {/* Current-move context (only the move being played, with its reason). */}
-            {replayMove && (
-              <div className="rounded-xl bg-white/5 p-2 ring-1 ring-white/10">
-                <div className="text-[10px] font-bold uppercase tracking-widest text-[#f3d888]">
-                  Move {replayMove.n}
-                  {replayMove.result ? ` - ${replayMove.result}` : ""}
-                </div>
-                <div className="text-[13px] font-semibold leading-tight text-white">
-                  {replayMove.who === "AI" ? `${replayMove.target} - ${replayMove.pocket}` : "Your shot"}
-                </div>
-                <div className="text-[10px] text-white/50">
-                  {replayMove.precision != null ? `${Math.round(replayMove.precision * 100)}% straight - ` : ""}
-                  {Math.round(replayMove.power * 100)}% power
-                </div>
-                {replayMove.who === "AI" && <div className="mt-0.5 text-[11px] leading-snug text-white/65">{replayMove.reason}</div>}
-              </div>
-            )}
-
-            {/* Vertical list of moves - tap to play just that shot. */}
-            <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-              {segments.map((seg) => (
-                <button
-                  key={seg.shot}
-                  onClick={() => playMove(seg)}
-                  className={`flex shrink-0 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-semibold transition active:scale-95 ${
-                    replayShot === seg.shot ? "bg-[#f3d888] text-[#231a08]" : "bg-white/10 text-white/75 ring-1 ring-white/15"
-                  }`}
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
-                  Move {seg.shot}
-                </button>
-              ))}
-            </div>
-
-            {/* Scrubber. */}
-            <input
-              type="range"
-              min={0}
-              max={Math.max(0, frameCount - 1)}
-              value={replayIdx}
-              onChange={(e) => scrubReplay(Number(e.target.value))}
-              aria-label="Rewind / scrub"
-              className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/25 accent-[#f3d888]"
-            />
-
-            {/* Play-all + speed. */}
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={toggleReplayPlay}
-                aria-label={replayPlaying ? "Pause" : "Play all"}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] text-[#231a08] ring-1 ring-[#f3d888] transition active:scale-95"
-              >
-                {replayPlaying ? (
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
-                ) : (
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
+        portrait ? (
+          <div className="pointer-events-none absolute inset-x-0 z-40 px-2" style={{ bottom: HUD_BOTTOM + 8 }}>
+            <div className="pointer-events-auto mx-auto flex w-full max-w-xl flex-col gap-1.5 rounded-2xl bg-black/85 p-2.5 shadow-2xl ring-1 ring-white/15 backdrop-blur-md">
+              <div className="flex items-center gap-2">
+                <span className="title-gold shrink-0 font-display text-base font-bold leading-none">Replay</span>
+                {replayMove && (
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-white/70">
+                    <b className="text-[#f3d888]">Move {replayMove.n}{replayMove.result ? ` - ${replayMove.result}` : ""}</b>
+                    {replayMove.who === "AI" ? ` - ${replayMove.target} ${replayMove.pocket}` : " - your shot"}
+                  </span>
                 )}
-              </button>
-              <div className="flex flex-1 flex-wrap items-center justify-end gap-1">
-                {REPLAY_SPEEDS.map((s) => (
+                <span className="shrink-0 font-display text-xs font-bold tabular-nums text-white/60">{fmtDur((replayIdx / REPLAY_FPS) * 1000)}</span>
+              </div>
+              {replayMove?.who === "AI" && <div className="truncate text-[11px] text-white/55">{replayMove.reason}</div>}
+              <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+                {segments.map((seg) => (
                   <button
-                    key={s}
-                    onClick={() => setSpeed(s)}
-                    className={`rounded-full px-2 py-0.5 text-[11px] font-bold transition active:scale-95 ${
-                      replaySpeed === s ? "bg-[#f3d888] text-[#231a08]" : "bg-white/10 text-white/70 ring-1 ring-white/20"
+                    key={seg.shot}
+                    onClick={() => playMove(seg)}
+                    className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition active:scale-95 ${
+                      replayShot === seg.shot ? "bg-[#f3d888] text-[#231a08]" : "bg-white/10 text-white/75 ring-1 ring-white/20"
                     }`}
                   >
-                    {s}x
+                    {seg.shot}
                   </button>
                 ))}
               </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={toggleReplayPlay}
+                  aria-label={replayPlaying ? "Pause" : "Play all"}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] text-[#231a08] ring-1 ring-[#f3d888] transition active:scale-95"
+                >
+                  {replayPlaying ? (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
+                  ) : (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
+                  )}
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(0, frameCount - 1)}
+                  value={replayIdx}
+                  onChange={(e) => scrubReplay(Number(e.target.value))}
+                  aria-label="Rewind / scrub"
+                  className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-white/25 accent-[#f3d888]"
+                />
+                <div className="flex shrink-0 gap-1">
+                  {REPLAY_SPEEDS.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setSpeed(s)}
+                      className={`rounded-full px-1.5 py-0.5 text-[11px] font-bold transition active:scale-95 ${
+                        replaySpeed === s ? "bg-[#f3d888] text-[#231a08]" : "bg-white/10 text-white/70 ring-1 ring-white/20"
+                      }`}
+                    >
+                      {s}x
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={exitReplay}
+                  className="shrink-0 rounded-full bg-white/10 px-3 py-1.5 text-sm font-semibold text-white ring-1 ring-white/25 transition active:scale-95"
+                >
+                  Done
+                </button>
+              </div>
             </div>
-
-            <button
-              onClick={exitReplay}
-              className="w-full rounded-full bg-white/10 px-4 py-1.5 text-sm font-semibold text-white ring-1 ring-white/25 transition active:scale-95"
-            >
-              Done
-            </button>
           </div>
-        </div>
+        ) : (
+          <div className="pointer-events-none absolute inset-y-0 left-0 z-40 flex max-h-full flex-col p-2" style={{ paddingTop: "max(8px,env(safe-area-inset-top))" }}>
+            <div className="pointer-events-auto flex max-h-full w-[190px] flex-col gap-2 overflow-hidden rounded-2xl bg-black/80 p-3 shadow-2xl ring-1 ring-white/15 backdrop-blur-md sm:w-[210px]">
+              <div className="flex items-center justify-between">
+                <span className="title-gold font-display text-lg font-bold leading-none">Replay</span>
+                <span className="font-display text-xs font-bold tabular-nums text-white/60">{fmtDur((replayIdx / REPLAY_FPS) * 1000)}</span>
+              </div>
+
+              {replayMove && (
+                <div className="rounded-xl bg-white/5 p-2 ring-1 ring-white/10">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#f3d888]">
+                    Move {replayMove.n}
+                    {replayMove.result ? ` - ${replayMove.result}` : ""}
+                  </div>
+                  <div className="text-[13px] font-semibold leading-tight text-white">
+                    {replayMove.who === "AI" ? `${replayMove.target} - ${replayMove.pocket}` : "Your shot"}
+                  </div>
+                  <div className="text-[10px] text-white/50">
+                    {replayMove.precision != null ? `${Math.round(replayMove.precision * 100)}% straight - ` : ""}
+                    {Math.round(replayMove.power * 100)}% power
+                  </div>
+                  {replayMove.who === "AI" && <div className="mt-0.5 text-[11px] leading-snug text-white/65">{replayMove.reason}</div>}
+                </div>
+              )}
+
+              <div className="flex min-h-0 flex-1 flex-wrap content-start gap-1.5 overflow-y-auto">
+                {segments.map((seg) => (
+                  <button
+                    key={seg.shot}
+                    onClick={() => playMove(seg)}
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm font-bold transition active:scale-95 ${
+                      replayShot === seg.shot ? "bg-[#f3d888] text-[#231a08]" : "bg-white/10 text-white/75 ring-1 ring-white/15"
+                    }`}
+                  >
+                    {seg.shot}
+                  </button>
+                ))}
+              </div>
+
+              <input
+                type="range"
+                min={0}
+                max={Math.max(0, frameCount - 1)}
+                value={replayIdx}
+                onChange={(e) => scrubReplay(Number(e.target.value))}
+                aria-label="Rewind / scrub"
+                className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/25 accent-[#f3d888]"
+              />
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={toggleReplayPlay}
+                  aria-label={replayPlaying ? "Pause" : "Play all"}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] text-[#231a08] ring-1 ring-[#f3d888] transition active:scale-95"
+                >
+                  {replayPlaying ? (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
+                  ) : (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
+                  )}
+                </button>
+                <div className="flex flex-1 flex-wrap items-center justify-end gap-1">
+                  {REPLAY_SPEEDS.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setSpeed(s)}
+                      className={`rounded-full px-2 py-0.5 text-[11px] font-bold transition active:scale-95 ${
+                        replaySpeed === s ? "bg-[#f3d888] text-[#231a08]" : "bg-white/10 text-white/70 ring-1 ring-white/20"
+                      }`}
+                    >
+                      {s}x
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={exitReplay}
+                className="w-full rounded-full bg-white/10 px-4 py-1.5 text-sm font-semibold text-white ring-1 ring-white/25 transition active:scale-95"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )
       )}
     </div>
   );
