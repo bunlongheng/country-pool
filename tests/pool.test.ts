@@ -12,6 +12,7 @@ import {
   allStopped,
   aimPath,
   planShot,
+  simulateShot,
   predictHit,
   rack,
   setBallSize,
@@ -156,6 +157,21 @@ test("planShot lines up a dead-straight pot and, when fired, actually sinks the 
 
 test("planShot returns null when only the cue ball is left", () => {
   assert.equal(planShot([cue({ id: 0 })]), null);
+});
+
+test("simulateShot flags a scratch when the cue is driven into a pocket", () => {
+  const cueBall = cue({ id: 0, x: TABLE.w * 0.5, y: 50 });
+  const res = simulateShot([cueBall], -cueBall.x, -cueBall.y, 1); // straight into top-left corner
+  assert.equal(res.scratched, true);
+  assert.equal(res.pottedNonCue, 0);
+});
+
+test("planShot never picks a shot that scratches on a full rack (rule: no die)", () => {
+  const balls = rack(Array.from({ length: 15 }, (_, i) => i));
+  const plan = planShot(balls);
+  assert.ok(plan, "should always have a shot on a full rack");
+  const res = simulateShot(balls, plan!.dirX, plan!.dirY, plan!.power);
+  assert.equal(res.scratched, false, "the AI must not choose a scratching shot");
 });
 
 test("rack lays out 1 cue + 15 object balls, all on the table", () => {

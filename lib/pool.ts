@@ -384,14 +384,14 @@ export function respotCue(balls: Ball[]): void {
   cue.sunk = false;
 }
 
-// AI shot planner. Considers every (object ball, pocket) pair via the ghost-ball
-// method: to sink ball T into pocket P, the cue must arrive at the ghost point one
-// ball-diameter behind T on the T->P line. A shot is only viable if (a) the cut isn't
-// too thin (dot of cue->ghost and T->P stays positive) and (b) the cue actually reaches
-// T first (no other ball blocks the line). Among the viable shots we pick the one with
-// the best pot probability - straightest cut, shortest travel - so the AI clears the
-// rack in as few shots as possible. Returns the aim/power plus the chosen target +
-// pocket so the UI can narrate the plan. Null when no ball is left.
+// ---- AI shot planner ------------------------------------------------------------------
+// This is a real look-ahead AI, not a geometry guess. For each candidate shot it clones
+// the world and SIMULATES it to a full stop with the same physics the game runs - so it
+// knows exactly where every ball (and the cue) lands. Two hard rules the owner asked for:
+//   1. Never die - a shot that scratches the cue ball is rejected outright.
+//   2. Don't waste shots - it prefers the line that runs the most balls in the fewest
+//      turns, projected by a greedy run-out rollout several shots deep.
+
 export type ShotPlan = {
   dirX: number;
   dirY: number;
@@ -399,20 +399,45 @@ export type ShotPlan = {
   target: Ball;
   pocket: { x: number; y: number };
   straightness: number; // 0..1 (1 = dead-straight, easiest); low = risky cut
-  viable: boolean; // false = no clean shot found, this is a best-effort nudge
+  viable: boolean; // true = simulated to sink a ball cleanly; false = a safety
 };
 
-export function planShot(balls: Ball[]): ShotPlan | null {
+const DIAG = Math.hypot(TABLE.w, TABLE.h);
+
+type Cand = { target: Ball; pocket: { x: number; y: number }; dirX: number; dirY: number; align: number; dist: number };
+
+// Clone the world, fire one shot, and run physics to a stop. Reports what dropped and
+// the settled layout - the AI's "project where the balls land" step.
+export function simulateShot(
+  balls: Ball[],
+  dirX: number,
+  dirY: number,
+  power: number,
+): { balls: Ball[]; pottedNonCue: number; scratched: boolean } {
+  const sim = balls.map((b) => ({ ...b }));
+  const cue = sim.find((b) => b.isCue);
+  if (!cue) return { balls: sim, pottedNonCue: 0, scratched: false };
+  shoot(cue, dirX, dirY, power);
+  let scratched = false;
+  let pottedNonCue = 0;
+  for (let i = 0; i < 60 * 10 && !allStopped(sim); i++) {
+    const ev = stepWorld(sim, 1 / 60);
+    for (const id of ev.pocketed) {
+      const b = sim.find((x) => x.id === id);
+      if (b?.isCue) scratched = true;
+      else pottedNonCue++;
+    }
+  }
+  return { balls: sim, pottedNonCue, scratched };
+}
+
+// Every clean pot available in a layout (ghost-ball geometry + clear line to the ball).
+function viableShots(balls: Ball[]): Cand[] {
   const cue = balls.find((b) => b.isCue && !b.sunk);
-  if (!cue) return null;
-  const targets = balls.filter((b) => !b.isCue && !b.sunk);
-  if (!targets.length) return null;
-
-  const diag = Math.hypot(TABLE.w, TABLE.h);
-  let best: ShotPlan | null = null;
-  let bestScore = -Infinity;
-
-  for (const t of targets) {
+  if (!cue) return [];
+  const out: Cand[] = [];
+  for (const t of balls) {
+    if (t.isCue || t.sunk) continue;
     for (const p of POCKETS) {
       const gx = p.x - t.x;
       const gy = p.y - t.y;
@@ -420,8 +445,7 @@ export function planShot(balls: Ball[]): ShotPlan | null {
       if (gd < 1e-3) continue;
       const gux = gx / gd;
       const guy = gy / gd;
-      // Ghost cue position: one ball-diameter behind T along the T->P line.
-      const ghx = t.x - gux * BALL_R * 2;
+      const ghx = t.x - gux * BALL_R * 2; // ghost point one diameter behind T on the T->P line
       const ghy = t.y - guy * BALL_R * 2;
       const cx = ghx - cue.x;
       const cy = ghy - cue.y;
@@ -429,27 +453,165 @@ export function planShot(balls: Ball[]): ShotPlan | null {
       if (cd < 1e-3) continue;
       const cux = cx / cd;
       const cuy = cy / cd;
-      const align = cux * gux + cuy * guy; // 1 = straight, 0 = 90deg cut
-      if (align < 0.25) continue; // too thin to make reliably
-      // The cue must strike THIS ball first, or the line is blocked.
+      const align = cux * gux + cuy * guy;
+      if (align < 0.25) continue; // too thin a cut to trust
       const hit = predictHit(cue.x, cue.y, cux, cuy, balls);
-      if (!hit || hit.target.id !== t.id) continue;
-      // Prefer straight + short shots (higher pot chance). Distance is normalised to
-      // the table diagonal so both terms are comparable.
-      const score = align * 3 - (cd + gd) / diag;
+      if (!hit || hit.target.id !== t.id) continue; // another ball blocks the line
+      out.push({ target: t, pocket: p, dirX: cux, dirY: cuy, align, dist: cd + gd });
+    }
+  }
+  return out;
+}
+
+// Controlled pace: enough to carry the ball its full path, more for thin cuts, capped.
+function powerFor(dist: number, align: number): number {
+  return Math.max(0.4, Math.min(1, 0.34 + dist / (DIAG * 1.25) + (1 - align) * 0.35));
+}
+
+// The best next-shot makeability in a layout (0 = nothing on) - used to value the leave.
+function bestAlign(balls: Ball[]): number {
+  let m = 0;
+  for (const c of viableShots(balls)) if (c.align > m) m = c.align;
+  return m;
+}
+
+// Greedy run-out projection: from a layout, keep taking the straightest pot and
+// simulating it, up to `depth` shots deep. Returns how many balls the line runs and
+// whether it ever scratches. This is the "think many shots ahead" that rewards clearing
+// the rack in the fewest turns. Greedy (single line), so it stays fast - not a full tree.
+function projectRunOut(balls: Ball[], depth: number): { potted: number; scratched: boolean } {
+  let cur = balls;
+  let potted = 0;
+  for (let d = 0; d < depth; d++) {
+    const cands = viableShots(cur);
+    if (!cands.length) break;
+    cands.sort((a, b) => b.align - a.align || a.dist - b.dist);
+    const c = cands[0];
+    const sim = simulateShot(cur, c.dirX, c.dirY, powerFor(c.dist, c.align));
+    if (sim.scratched) return { potted, scratched: true };
+    if (sim.pottedNonCue === 0) break; // the line missed - run ends here
+    potted += sim.pottedNonCue;
+    cur = sim.balls;
+  }
+  return { potted, scratched: false };
+}
+
+function nearestPocketTo(x: number, y: number): { x: number; y: number } {
+  let best = POCKETS[0];
+  let bd = Infinity;
+  for (const p of POCKETS) {
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d < bd) {
+      bd = d;
+      best = p;
+    }
+  }
+  return best;
+}
+
+type Scored = ShotPlan & { _scratch: boolean; _pots: number };
+
+// No clean pot (or every pot scratches): find the safest developing shot. Roll gently
+// into a reachable ball at a few paces, simulate each, and keep the non-scratch option
+// that leaves the best next shot. Never fires blindly into open space.
+function bestSafety(balls: Ball[]): Scored | null {
+  const cue = balls.find((b) => b.isCue && !b.sunk);
+  if (!cue) return null;
+  const targets = balls.filter((b) => !b.isCue && !b.sunk);
+  if (!targets.length) return null;
+  let best: Scored | null = null;
+  let bestScore = -Infinity;
+  for (const t of targets) {
+    const dx = t.x - cue.x;
+    const dy = t.y - cue.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const dirX = dx / d;
+    const dirY = dy / d;
+    if (!predictHit(cue.x, cue.y, dirX, dirY, balls)) continue; // must actually reach a ball
+    for (const pw of [0.3, 0.42, 0.55]) {
+      const sim = simulateShot(balls, dirX, dirY, pw);
+      let score = 0;
+      if (sim.scratched) score -= 1000; // never die, even on a safety
+      score += sim.pottedNonCue * 20; // a safe ball that happens to drop is a bonus
+      score += bestAlign(sim.balls) * 6; // leave a makeable next shot
+      score -= pw; // softest pace that works
       if (score > bestScore) {
         bestScore = score;
-        // Enough pace to carry T the full T->P distance, plus extra for thin cuts
-        // (a glancing hit transfers less speed), floored so it always reaches.
-        const power = Math.max(0.42, Math.min(1, 0.4 + (cd + gd) / (diag * 1.3) + (1 - align) * 0.4));
-        best = { dirX: cux, dirY: cuy, power, target: t, pocket: p, straightness: align, viable: true };
+        best = {
+          dirX,
+          dirY,
+          power: pw,
+          target: t,
+          pocket: nearestPocketTo(t.x, t.y),
+          straightness: 0,
+          viable: sim.pottedNonCue > 0,
+          _scratch: sim.scratched,
+          _pots: sim.pottedNonCue,
+        };
       }
     }
   }
-  if (best) return best;
+  return best;
+}
 
-  // No clean pot available: nudge the nearest ball toward its closest pocket at medium
-  // pace to open the table up for the next turn.
+export function planShot(balls: Ball[]): ShotPlan | null {
+  const cue = balls.find((b) => b.isCue && !b.sunk);
+  if (!cue) return null;
+  const targets = balls.filter((b) => !b.isCue && !b.sunk);
+  if (!targets.length) return null;
+
+  // Only simulate the most promising pots (straightest first) to stay responsive.
+  const rootCands = viableShots(balls)
+    .sort((a, b) => b.align - a.align || a.dist - b.dist)
+    .slice(0, 6);
+
+  let best: Scored | null = null;
+  let bestScore = -Infinity;
+  for (const c of rootCands) {
+    const base = powerFor(c.dist, c.align);
+    const powers = Array.from(new Set([base, Math.min(1, base + 0.13), Math.min(1, base + 0.28)]));
+    for (const pw of powers) {
+      const sim = simulateShot(balls, c.dirX, c.dirY, pw);
+      let score = 0;
+      if (sim.scratched) score -= 1000; // rule 1: never die
+      score += sim.pottedNonCue * 20; // pot balls now
+      if (sim.pottedNonCue > 0 && !sim.scratched) {
+        // rule 2: reward the line that runs the most balls in the fewest turns.
+        const ro = projectRunOut(sim.balls, 6);
+        score += ro.potted * 8;
+        if (ro.scratched) score -= 12; // a run-out that ends in a scratch is a worse line
+      }
+      // Defensive leave: never park the cue right at a pocket mouth (risky next shot, and
+      // a hedge against any timestep drift under heavy lag).
+      const scue = sim.balls.find((b) => b.isCue);
+      if (scue && !scue.sunk) {
+        let dmin = Infinity;
+        for (const p of POCKETS) dmin = Math.min(dmin, Math.hypot(scue.x - p.x, scue.y - p.y));
+        if (dmin < POCKET_R * 3) score -= (POCKET_R * 3 - dmin) * 0.3;
+      }
+      score += c.align * 3; // makeability of this shot
+      score -= pw * 1.5; // controlled power - do not overhit
+      if (score > bestScore) {
+        bestScore = score;
+        best = { dirX: c.dirX, dirY: c.dirY, power: pw, target: c.target, pocket: c.pocket, straightness: c.align, viable: true, _scratch: sim.scratched, _pots: sim.pottedNonCue };
+      }
+    }
+  }
+
+  // If the best pot scratches or nothing pots cleanly, take the safest developing shot.
+  if (!best || best._scratch || best._pots === 0) {
+    const safe = bestSafety(balls);
+    if (safe && (!best || best._scratch || (best._pots === 0 && !safe._scratch))) best = safe;
+  }
+
+  if (best) {
+    const { _scratch, _pots, ...plan } = best;
+    void _scratch;
+    void _pots;
+    return plan;
+  }
+
+  // Last resort (no reachable ball found by any route): gentle roll at the nearest ball.
   let near = targets[0];
   let nd = Infinity;
   for (const t of targets) {
@@ -459,17 +621,8 @@ export function planShot(balls: Ball[]): ShotPlan | null {
       near = t;
     }
   }
-  let pocket = POCKETS[0];
-  let pd = Infinity;
-  for (const p of POCKETS) {
-    const d = Math.hypot(p.x - near.x, p.y - near.y);
-    if (d < pd) {
-      pd = d;
-      pocket = p;
-    }
-  }
   const dx = near.x - cue.x;
   const dy = near.y - cue.y;
   const dd = Math.hypot(dx, dy) || 1;
-  return { dirX: dx / dd, dirY: dy / dd, power: 0.6, target: near, pocket, straightness: 0, viable: false };
+  return { dirX: dx / dd, dirY: dy / dd, power: 0.5, target: near, pocket: nearestPocketTo(near.x, near.y), straightness: 0, viable: false };
 }

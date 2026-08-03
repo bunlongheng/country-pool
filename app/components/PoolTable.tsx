@@ -412,36 +412,51 @@ export default function PoolTable() {
     let raf = 0;
     let last = performance.now();
     let wasMoving = false;
+    // Fixed physics timestep: step the world in exact 1/60 chunks (accumulator pattern)
+    // instead of the raw frame delta. This makes physics deterministic and frame-rate
+    // independent - and, crucially, IDENTICAL to the AI's simulateShot (also 1/60), so a
+    // shot the AI projects as safe cannot scratch for real due to timestep drift.
+    const STEP = 1 / 60;
+    let acc = 0;
 
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
-      const dt = Math.min(0.033, (now - last) / 1000);
+      const frameDt = Math.min(0.05, (now - last) / 1000); // real frame delta (visual timers)
       last = now;
+      acc += frameDt; // clamp big stalls; drop excess time
       const { ox, oy, scale } = trRef.current;
 
-      const moving = !allStopped(balls);
-      if (moving) {
-        const ev = stepWorld(balls, dt);
-        if (ev.rails > 0) sound.rail();
-        for (const imp of ev.clicks) sound.click(imp / 120);
-        for (const id of ev.pocketed) {
-          const b = balls.find((x) => x.id === id);
-          if (!b) continue;
-          pocketFlashRef.current[nearestPocket(b.x, b.y)] = b.isCue ? -FLASH_DUR : FLASH_DUR; // scratch = red
-          if (b.isCue) {
-            sound.scratch();
-            deathsRef.current += 1; // a scratch = a "death"
-            setDamageKey((k) => k + 1); // FPS-style red screen flash
-          } else {
-            sound.pocket();
-            sound.announce(COUNTRIES[b.ci].name); // say the country that just dropped
-            pottedRef.current += 1;
-            pottedListRef.current.push({ id: b.id, code: COUNTRIES[b.ci].code });
-            setPotted(pottedRef.current); // update Score immediately
-            setPottedCodes([...pottedListRef.current]); // roll the flag into the tray immediately
+      if (!allStopped(balls)) {
+        let steps = 0;
+        while (acc >= STEP && steps < 8) {
+          const ev = stepWorld(balls, STEP);
+          if (ev.rails > 0) sound.rail();
+          for (const imp of ev.clicks) sound.click(imp / 120);
+          for (const id of ev.pocketed) {
+            const b = balls.find((x) => x.id === id);
+            if (!b) continue;
+            pocketFlashRef.current[nearestPocket(b.x, b.y)] = b.isCue ? -FLASH_DUR : FLASH_DUR; // scratch = red
+            if (b.isCue) {
+              sound.scratch();
+              deathsRef.current += 1; // a scratch = a "death"
+              setDamageKey((k) => k + 1); // FPS-style red screen flash
+            } else {
+              sound.pocket();
+              sound.announce(COUNTRIES[b.ci].name); // say the country that just dropped
+              pottedRef.current += 1;
+              pottedListRef.current.push({ id: b.id, code: COUNTRIES[b.ci].code });
+              setPotted(pottedRef.current); // update Score immediately
+              setPottedCodes([...pottedListRef.current]); // roll the flag into the tray immediately
+            }
           }
+          acc -= STEP;
+          steps++;
+          if (allStopped(balls)) break;
         }
+      } else {
+        acc = 0;
       }
+      const moving = !allStopped(balls);
       // Transition moving -> stopped: settle the turn.
       if (wasMoving && !moving) {
         dirtyRef.current = true; // one final repaint of the resting table
@@ -475,7 +490,7 @@ export default function PoolTable() {
       for (let i = 0; i < balls.length; i++) {
         const b = balls[i];
         const sp = Math.hypot(b.vx, b.vy);
-        distRef.current[i] += sp * scale * dt;
+        distRef.current[i] += sp * scale * frameDt;
         const r = renderRef.current[i];
         r.x = ox + b.x * scale;
         r.y = oy + b.y * scale;
@@ -490,10 +505,10 @@ export default function PoolTable() {
 
       const flash = pocketFlashRef.current;
       for (let i = 0; i < flash.length; i++) {
-        if (flash[i] > 0) flash[i] = Math.max(0, flash[i] - dt);
-        else if (flash[i] < 0) flash[i] = Math.min(0, flash[i] + dt);
+        if (flash[i] > 0) flash[i] = Math.max(0, flash[i] - frameDt);
+        else if (flash[i] < 0) flash[i] = Math.min(0, flash[i] + frameDt);
       }
-      if (cueFlashRef.current > 0) cueFlashRef.current = Math.max(0, cueFlashRef.current - dt);
+      if (cueFlashRef.current > 0) cueFlashRef.current = Math.max(0, cueFlashRef.current - frameDt);
 
       // Only repaint the felt when something is actually changing (balls moving, aiming,
       // a pocket/cue flash live) or a one-off redraw was requested (settings, resize,
