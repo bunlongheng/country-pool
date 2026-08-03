@@ -188,6 +188,17 @@ export default function PoolTable() {
   const deathsRef = useRef(0);
   const wonRef = useRef(false);
   const lostRef = useRef(false);
+  // Rack timer: clock starts on the first shot, stops when the rack is won or lost.
+  const [startAt, setStartAt] = useState<number | null>(null); // epoch ms of the first shot
+  const [endAt, setEndAt] = useState<number | null>(null); // epoch ms when the rack ended
+  const startAtRef = useRef<number | null>(null);
+  const endAtRef = useRef<number | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0); // live rack duration, updated off-render
+  // Pause/resume: freezes physics, the AI, and the timer (paused time is not counted).
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
+  const pausedMsRef = useRef(0); // total time spent paused this rack
+  const pauseStartRef = useRef<number | null>(null); // when the current pause began
   const [portrait, setPortrait] = useState(false);
   const [kids, setKids] = useState(false);
   const kidsRef = useRef(false);
@@ -213,7 +224,7 @@ export default function PoolTable() {
       clearTimeout(aiTimerRef.current);
       aiTimerRef.current = null;
     }
-    if (!aiRef.current || wonRef.current || lostRef.current) return;
+    if (!aiRef.current || wonRef.current || lostRef.current || pausedRef.current) return;
     const balls = ballsRef.current;
     if (!allStopped(balls)) return;
     const plan = planShot(balls);
@@ -246,6 +257,10 @@ export default function PoolTable() {
         sound.cue(plan.power);
         shotsRef.current += 1;
         setShots(shotsRef.current);
+        if (shotsRef.current === 1) {
+          startAtRef.current = Date.now(); // clock starts on the first shot of the rack
+          setStartAt(startAtRef.current);
+        }
       }
       aimRef.current.power = 0;
       setPower(0);
@@ -282,6 +297,53 @@ export default function PoolTable() {
     [],
   );
 
+  // Tick the live rack timer while a rack is in progress (freezes on won/lost/paused).
+  // Computed here (not during render) so it stays clear of the pure-render rules.
+  useEffect(() => {
+    if (startAt == null || won || lost || paused) return;
+    const compute = () => setElapsedMs(Date.now() - startAt - pausedMsRef.current);
+    compute();
+    const iv = setInterval(compute, 250);
+    return () => clearInterval(iv);
+  }, [startAt, won, lost, paused]);
+
+  // Pause/resume the game (physics, AI, and the timer all freeze together).
+  const togglePause = useCallback(() => {
+    if (wonRef.current || lostRef.current || startAtRef.current == null) return; // nothing running
+    const v = !pausedRef.current;
+    pausedRef.current = v;
+    setPaused(v);
+    dirtyRef.current = true;
+    if (v) {
+      pauseStartRef.current = Date.now();
+      if (aiTimerRef.current) {
+        clearTimeout(aiTimerRef.current); // hold the AI while paused
+        aiTimerRef.current = null;
+      }
+      // Freeze the AI's next planned shot on screen (aim line + narration) so it can be
+      // studied for as long as you like while paused - that is the point of pausing here.
+      if (aiRef.current && allStopped(ballsRef.current)) {
+        const plan = planShot(ballsRef.current);
+        if (plan) {
+          aimRef.current.dirX = plan.dirX;
+          aimRef.current.dirY = plan.dirY;
+          aimRef.current.power = plan.power;
+          aimRef.current.active = true;
+          setAiPlan({ country: COUNTRIES[plan.target.ci]?.name ?? "the ball", precision: plan.straightness, power: plan.power, viable: plan.viable });
+        }
+      }
+    } else {
+      if (pauseStartRef.current != null) {
+        pausedMsRef.current += Date.now() - pauseStartRef.current; // exclude paused time
+        pauseStartRef.current = null;
+      }
+      // Resume the AI if it was driving and the table is at rest.
+      if (aiRef.current && allStopped(ballsRef.current)) {
+        aiTimerRef.current = setTimeout(() => aiShootRef.current(), 400);
+      }
+    }
+  }, []);
+
   const muted = useSyncExternalStore(
     (cb) => sound.subscribe(cb),
     () => sound.isMuted(),
@@ -316,6 +378,16 @@ export default function PoolTable() {
     setDeaths(0);
     setWon(false);
     setLost(false);
+    // Reset the rack timer + pause state.
+    startAtRef.current = null;
+    endAtRef.current = null;
+    pausedMsRef.current = 0;
+    pauseStartRef.current = null;
+    pausedRef.current = false;
+    setStartAt(null);
+    setEndAt(null);
+    setPaused(false);
+    setElapsedMs(0);
     dirtyRef.current = true;
     setGame(buildRack());
     // Keep auto-playing the new rack if AI mode is on.
@@ -426,7 +498,8 @@ export default function PoolTable() {
       acc += frameDt; // clamp big stalls; drop excess time
       const { ox, oy, scale } = trRef.current;
 
-      if (!allStopped(balls)) {
+      if (pausedRef.current) acc = 0; // freeze physics + time while paused
+      if (!pausedRef.current && !allStopped(balls)) {
         let steps = 0;
         while (acc >= STEP && steps < 8) {
           const ev = stepWorld(balls, STEP);
@@ -471,11 +544,17 @@ export default function PoolTable() {
         if (pottedRef.current >= OBJECT_BALLS && !wonRef.current) {
           wonRef.current = true;
           setWon(true);
+          endAtRef.current = Date.now();
+          setEndAt(endAtRef.current);
+          if (startAtRef.current != null) setElapsedMs(endAtRef.current - startAtRef.current - pausedMsRef.current);
           sound.win();
         } else if (!wonRef.current && !lostRef.current && (shotsRef.current >= MAX_SHOTS || deathsRef.current >= MAX_DEATHS)) {
           // Out of shots, or scratched too many times -> game over.
           lostRef.current = true;
           setLost(true);
+          endAtRef.current = Date.now();
+          setEndAt(endAtRef.current);
+          if (startAtRef.current != null) setElapsedMs(endAtRef.current - startAtRef.current - pausedMsRef.current);
           sound.gameOver(); // cut the jazz, play the game-over motif
         }
         // AI mode: once the table has settled, queue the computer's next shot.
@@ -541,8 +620,8 @@ export default function PoolTable() {
 
   const onDown = useCallback((e: React.PointerEvent) => {
     sound.unlock();
-    // Ignore taps while the AI is playing (it drives the cue) or the game is over.
-    if (aiRef.current || wonRef.current || lostRef.current || !allStopped(ballsRef.current)) return;
+    // Ignore taps while paused, while the AI is playing, or when the game is over.
+    if (pausedRef.current || aiRef.current || wonRef.current || lostRef.current || !allStopped(ballsRef.current)) return;
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     aimRef.current.active = true;
     setAiming(true);
@@ -579,6 +658,10 @@ export default function PoolTable() {
         sound.cue(a.power);
         shotsRef.current += 1;
         setShots(shotsRef.current);
+        if (shotsRef.current === 1) {
+          startAtRef.current = Date.now(); // clock starts on the first shot of the rack
+          setStartAt(startAtRef.current);
+        }
       }
     }
     a.power = 0;
@@ -587,6 +670,7 @@ export default function PoolTable() {
 
   const dpr = typeof window !== "undefined" ? Math.min(2, window.devicePixelRatio || 1) : 1;
   const pct = Math.round(power * 100);
+  const durMs = Math.max(0, elapsedMs); // live rack duration (excludes paused time)
 
   return (
     <div className="relative h-full w-full overflow-hidden" style={{ background: "var(--room)" }}>
@@ -662,6 +746,7 @@ export default function PoolTable() {
           <Stat label="Score" value={potted} />
           <Stat label="Shots" value={shots} />
           <Stat label="Died" value={deaths} />
+          <Stat label="Time" value={fmtDur(durMs)} />
         </div>
 
         <div className="flex flex-1 shrink-0 items-center justify-end gap-1.5">
@@ -679,6 +764,13 @@ export default function PoolTable() {
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" /><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></svg>
             ) : (
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /></svg>
+            )}
+          </IconBtn>
+          <IconBtn onClick={togglePause} active={paused} title={paused ? "Resume" : "Pause"}>
+            {paused ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
             )}
           </IconBtn>
           <IconBtn onClick={() => { sound.unlock(); setConfirmReset(true); }} title="New rack">
@@ -841,6 +933,25 @@ export default function PoolTable() {
         />
       )}
 
+      {/* Paused: a compact pill (NOT a full overlay) so the felt, ball positions, and the
+          AI's planned aim line stay visible - the whole point is to study them while paused. */}
+      {paused && !won && !lost && (
+        <div className="pointer-events-none absolute inset-x-0 z-30 flex justify-center px-4" style={{ bottom: HUD_BOTTOM + 12 }}>
+          <div className="pointer-events-auto flex items-center gap-3 rounded-full bg-black/70 px-4 py-2 text-white shadow-xl ring-1 ring-white/15 backdrop-blur-sm">
+            <span className="font-display title-gold text-lg font-bold leading-none">Paused</span>
+            <span className="text-xs font-semibold uppercase tracking-widest text-white/60">{fmtDur(durMs)}</span>
+            <button
+              onClick={togglePause}
+              aria-label="Resume"
+              className="flex items-center gap-1.5 rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-4 py-1.5 font-display text-sm font-bold tracking-wide text-[#231a08] ring-1 ring-[#f3d888] transition active:scale-95"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
+              Resume
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Win overlay: confetti + Pool Champion */}
       {won && (
         <div role="dialog" aria-modal="true" aria-label="You win" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 overflow-hidden bg-black/70 backdrop-blur-md">
@@ -851,7 +962,13 @@ export default function PoolTable() {
           <div className="z-10 flex gap-10 text-center text-white">
             <Big label="Shots" value={shots} />
             <Big label="Died" value={deaths} />
+            <Big label="Time" value={fmtDur(durMs)} />
           </div>
+          {startAt != null && endAt != null && (
+            <div className="z-10 -mt-2 text-xs font-medium uppercase tracking-widest text-white/60">
+              Started {fmtClock(startAt)} - Finished {fmtClock(endAt)}
+            </div>
+          )}
           <button
             onClick={resetGame}
             className="z-10 mt-2 rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-8 py-3 font-display text-xl font-bold tracking-wide text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
@@ -874,7 +991,13 @@ export default function PoolTable() {
             <Big label="Score" value={potted} />
             <Big label="Shots" value={shots} />
             <Big label="Died" value={deaths} />
+            <Big label="Time" value={fmtDur(durMs)} />
           </div>
+          {startAt != null && endAt != null && (
+            <div className="-mt-2 text-xs font-medium uppercase tracking-widest text-white/60">
+              Started {fmtClock(startAt)} - Ended {fmtClock(endAt)}
+            </div>
+          )}
           <button
             onClick={resetGame}
             className="mt-2 rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-8 py-3 font-display text-xl font-bold tracking-wide text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
@@ -938,8 +1061,17 @@ function PottedBall({ code }: { code: string }) {
   );
 }
 
+// Format an elapsed span as M:SS (or MM:SS) and a clock time as e.g. "3:45 PM".
+function fmtDur(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+function fmtClock(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 // One HUD stat: label above a big gold number (Score / Shots / Died all match).
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="shrink-0 text-center">
       <div className="text-[10px] uppercase tracking-widest text-white/60">{label}</div>
