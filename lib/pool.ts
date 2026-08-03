@@ -400,6 +400,7 @@ export type ShotPlan = {
   pocket: { x: number; y: number };
   straightness: number; // 0..1 (1 = dead-straight, easiest); low = risky cut
   viable: boolean; // true = simulated to sink a ball cleanly; false = a safety
+  reason: string; // human-readable why - for the move log
 };
 
 const DIAG = Math.hypot(TABLE.w, TABLE.h);
@@ -509,7 +510,7 @@ function nearestPocketTo(x: number, y: number): { x: number; y: number } {
   return best;
 }
 
-type Scored = ShotPlan & { _scratch: boolean; _pots: number };
+type Scored = ShotPlan & { _scratch: boolean; _pots: number; _ro: number };
 
 // No clean pot (or every pot scratches): find the safest developing shot. Roll gently
 // into a reachable ball at a few paces, simulate each, and keep the non-scratch option
@@ -545,8 +546,10 @@ function bestSafety(balls: Ball[]): Scored | null {
           pocket: nearestPocketTo(t.x, t.y),
           straightness: 0,
           viable: sim.pottedNonCue > 0,
+          reason: "",
           _scratch: sim.scratched,
           _pots: sim.pottedNonCue,
+          _ro: 0,
         };
       }
     }
@@ -573,11 +576,13 @@ export function planShot(balls: Ball[]): ShotPlan | null {
     for (const pw of powers) {
       const sim = simulateShot(balls, c.dirX, c.dirY, pw);
       let score = 0;
+      let roPotted = 0;
       if (sim.scratched) score -= 1000; // rule 1: never die
       score += sim.pottedNonCue * 20; // pot balls now
       if (sim.pottedNonCue > 0 && !sim.scratched) {
         // rule 2: reward the line that runs the most balls in the fewest turns.
         const ro = projectRunOut(sim.balls, 6);
+        roPotted = ro.potted;
         score += ro.potted * 8;
         if (ro.scratched) score -= 12; // a run-out that ends in a scratch is a worse line
       }
@@ -593,7 +598,7 @@ export function planShot(balls: Ball[]): ShotPlan | null {
       score -= pw * 1.5; // controlled power - do not overhit
       if (score > bestScore) {
         bestScore = score;
-        best = { dirX: c.dirX, dirY: c.dirY, power: pw, target: c.target, pocket: c.pocket, straightness: c.align, viable: true, _scratch: sim.scratched, _pots: sim.pottedNonCue };
+        best = { dirX: c.dirX, dirY: c.dirY, power: pw, target: c.target, pocket: c.pocket, straightness: c.align, viable: true, reason: "", _scratch: sim.scratched, _pots: sim.pottedNonCue, _ro: roPotted };
       }
     }
   }
@@ -605,9 +610,20 @@ export function planShot(balls: Ball[]): ShotPlan | null {
   }
 
   if (best) {
-    const { _scratch, _pots, ...plan } = best;
+    // Build the human-readable reason from the chosen shot's own numbers.
+    const pct = Math.round(best.straightness * 100);
+    const pace = best.power < 0.55 ? "soft pace to hold position" : best.power > 0.82 ? "firm to carry the distance" : "controlled pace";
+    if (best.viable) {
+      best.reason = `Straightest makeable pot (${pct}% straight)`;
+      if (best._ro > 0) best.reason += `, sets up a ${best._ro + 1}-ball run`;
+      best.reason += `; ${pace}`;
+    } else {
+      best.reason = "No clean pot - safe roll to leave a shot and avoid a scratch";
+    }
+    const { _scratch, _pots, _ro, ...plan } = best;
     void _scratch;
     void _pots;
+    void _ro;
     return plan;
   }
 
@@ -624,5 +640,5 @@ export function planShot(balls: Ball[]): ShotPlan | null {
   const dx = near.x - cue.x;
   const dy = near.y - cue.y;
   const dd = Math.hypot(dx, dy) || 1;
-  return { dirX: dx / dd, dirY: dy / dd, power: 0.5, target: near, pocket: nearestPocketTo(near.x, near.y), straightness: 0, viable: false };
+  return { dirX: dx / dd, dirY: dy / dd, power: 0.5, target: near, pocket: nearestPocketTo(near.x, near.y), straightness: 0, viable: false, reason: "Last resort - gentle contact to break the cluster" };
 }

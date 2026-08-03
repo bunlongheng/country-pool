@@ -146,6 +146,7 @@ test("planShot lines up a dead-straight pot and, when fired, actually sinks the 
   assert.equal(plan!.target.id, 1);
   assert.ok(plan!.viable, "a clear straight line is a viable pot");
   assert.ok(plan!.straightness > 0.95, `near dead-straight, got ${plan!.straightness}`);
+  assert.ok(plan!.reason.length > 0, "every plan carries a human-readable reason");
   // Fire the plan and simulate: the target should drop into the corner.
   shoot(cueBall, plan!.dirX, plan!.dirY, plan!.power);
   let sunk = false;

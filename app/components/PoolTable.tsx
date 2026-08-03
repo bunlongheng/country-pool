@@ -37,6 +37,29 @@ const FLASH_DUR = 0.72; // seconds a pocket blinks green (2 pulses) after a ball
 const CUE_FLASH_DUR = 0.55; // seconds the cue ball blinks white (1 pulse) after a respawn
 let REDUCE_MOTION = false; // set from matchMedia; skips the canvas fire for motion-sensitive users
 
+// One recorded shot for the end-of-rack move log.
+type MoveEntry = {
+  n: number; // shot number
+  who: "AI" | "You";
+  target: string; // country aimed at (AI) or "-"
+  pocket: string; // pocket label (AI) or "-"
+  precision: number | null; // straightness 0..1 (AI pot) or null
+  power: number; // 0..1
+  reason: string;
+  result: string; // "potted N" | "missed" | "scratch" | "" (pending)
+  potBase: number; // pots before this shot, to attribute the result at settle
+  deathBase: number;
+};
+
+// A human name for a pocket, from its table coords (for the move log).
+function pocketLabel(p: { x: number; y: number }): string {
+  const left = p.x < TABLE.w * 0.25;
+  const right = p.x > TABLE.w * 0.75;
+  const top = p.y < TABLE.h * 0.5;
+  if (!left && !right) return top ? "top side" : "bottom side";
+  return `${top ? "top" : "bottom"}-${left ? "left" : "right"}`;
+}
+
 // The pocket index closest to a point - which hole a dropped ball fell into.
 function nearestPocket(x: number, y: number): number {
   let bi = 0;
@@ -194,6 +217,8 @@ export default function PoolTable() {
   const startAtRef = useRef<number | null>(null);
   const endAtRef = useRef<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0); // live rack duration, updated off-render
+  const [moveLog, setMoveLog] = useState<MoveEntry[]>([]); // every shot + reason, shown at the end
+  const moveLogRef = useRef<MoveEntry[]>([]);
   // Pause/resume: freezes physics, the AI, and the timer (paused time is not counted).
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(false);
@@ -261,6 +286,20 @@ export default function PoolTable() {
           startAtRef.current = Date.now(); // clock starts on the first shot of the rack
           setStartAt(startAtRef.current);
         }
+        // Record the move + reason for the end-of-rack log (result filled in at settle).
+        moveLogRef.current.push({
+          n: shotsRef.current,
+          who: "AI",
+          target: COUNTRIES[plan.target.ci]?.name ?? "-",
+          pocket: pocketLabel(plan.pocket),
+          precision: plan.viable ? plan.straightness : null,
+          power: plan.power,
+          reason: plan.reason,
+          result: "",
+          potBase: pottedRef.current,
+          deathBase: deathsRef.current,
+        });
+        setMoveLog([...moveLogRef.current]);
       }
       aimRef.current.power = 0;
       setPower(0);
@@ -388,6 +427,8 @@ export default function PoolTable() {
     setEndAt(null);
     setPaused(false);
     setElapsedMs(0);
+    moveLogRef.current = [];
+    setMoveLog([]);
     dirtyRef.current = true;
     setGame(buildRack());
     // Keep auto-playing the new rack if AI mode is on.
@@ -541,6 +582,14 @@ export default function PoolTable() {
         setPotted(pottedRef.current);
         setPottedCodes([...pottedListRef.current]);
         setDeaths(deathsRef.current);
+        // Finalize the last move's result now that the table has settled.
+        const lastMove = moveLogRef.current[moveLogRef.current.length - 1];
+        if (lastMove && lastMove.result === "") {
+          const dropped = pottedRef.current - lastMove.potBase;
+          const scratched = deathsRef.current - lastMove.deathBase > 0;
+          lastMove.result = scratched ? "scratch" : dropped > 0 ? `potted ${dropped}` : "missed";
+          setMoveLog([...moveLogRef.current]);
+        }
         if (pottedRef.current >= OBJECT_BALLS && !wonRef.current) {
           wonRef.current = true;
           setWon(true);
@@ -662,6 +711,19 @@ export default function PoolTable() {
           startAtRef.current = Date.now(); // clock starts on the first shot of the rack
           setStartAt(startAtRef.current);
         }
+        moveLogRef.current.push({
+          n: shotsRef.current,
+          who: "You",
+          target: "-",
+          pocket: "-",
+          precision: null,
+          power: a.power,
+          reason: "Your shot",
+          result: "",
+          potBase: pottedRef.current,
+          deathBase: deathsRef.current,
+        });
+        setMoveLog([...moveLogRef.current]);
       }
     }
     a.power = 0;
@@ -954,7 +1016,7 @@ export default function PoolTable() {
 
       {/* Win overlay: confetti + Pool Champion */}
       {won && (
-        <div role="dialog" aria-modal="true" aria-label="You win" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 overflow-hidden bg-black/70 backdrop-blur-md">
+        <div role="dialog" aria-modal="true" aria-label="You win" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 overflow-y-auto bg-black/70 py-6 backdrop-blur-md">
           <Confetti />
           <div className="title-gold z-10 font-display text-5xl font-bold tracking-tight sm:text-7xl">
             Pool Champion
@@ -969,6 +1031,7 @@ export default function PoolTable() {
               Started {fmtClock(startAt)} - Finished {fmtClock(endAt)}
             </div>
           )}
+          {moveLog.length > 0 && <MoveLogPanel log={moveLog} />}
           <button
             onClick={resetGame}
             className="z-10 mt-2 rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-8 py-3 font-display text-xl font-bold tracking-wide text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
@@ -980,7 +1043,7 @@ export default function PoolTable() {
 
       {/* Lose overlay */}
       {lost && (
-        <div role="dialog" aria-modal="true" aria-label="Game over" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-black/80 backdrop-blur-md">
+        <div role="dialog" aria-modal="true" aria-label="Game over" className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 overflow-y-auto bg-black/80 py-6 backdrop-blur-md">
           <div className="font-display text-5xl font-bold tracking-tight text-[#ff5a4a] drop-shadow-lg sm:text-7xl">
             Game Over
           </div>
@@ -998,6 +1061,7 @@ export default function PoolTable() {
               Started {fmtClock(startAt)} - Ended {fmtClock(endAt)}
             </div>
           )}
+          {moveLog.length > 0 && <MoveLogPanel log={moveLog} />}
           <button
             onClick={resetGame}
             className="mt-2 rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-8 py-3 font-display text-xl font-bold tracking-wide text-[#231a08] shadow-xl ring-1 ring-[#f3d888] transition active:scale-95"
@@ -1006,6 +1070,35 @@ export default function PoolTable() {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// End-of-rack move log: every shot with the AI's reason, so you can review the game.
+function MoveLogPanel({ log }: { log: MoveEntry[] }) {
+  return (
+    <div className="z-10 w-full max-w-lg px-4">
+      <div className="mb-1.5 text-center text-[11px] font-bold uppercase tracking-widest text-white/50">Move log</div>
+      <div className="max-h-[34vh] overflow-y-auto rounded-xl bg-black/40 ring-1 ring-white/10">
+        {log.map((m) => {
+          const color = m.result.startsWith("potted") ? "text-[#5be36a]" : m.result === "scratch" ? "text-[#ff5a4a]" : "text-white/45";
+          return (
+            <div key={m.n} className="flex items-start gap-2 border-b border-white/5 px-3 py-1.5 text-left text-xs last:border-b-0">
+              <span className="w-5 shrink-0 pt-0.5 text-white/35">{m.n}</span>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-white">
+                  {m.who === "AI" ? `${m.target} - ${m.pocket}` : "Your shot"}
+                  <span className="font-normal text-white/45">
+                    {m.precision != null ? ` - ${Math.round(m.precision * 100)}% straight` : ""} - {Math.round(m.power * 100)}% power
+                  </span>
+                </div>
+                <div className="text-white/55">{m.reason}</div>
+              </div>
+              <span className={`shrink-0 pt-0.5 text-right font-semibold ${color}`}>{m.result || "..."}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
