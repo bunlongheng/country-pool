@@ -378,10 +378,11 @@ export default function PoolTable() {
     return () => clearInterval(iv);
   }, [startAt, won, lost, paused]);
 
-  // Pause/resume the game (physics, AI, and the timer all freeze together).
-  const togglePause = useCallback(() => {
+  // Pause/resume the game (physics, AI, and the timer all freeze together). Opening
+  // Settings pauses; closing it resumes - the Settings dialog is the pause screen.
+  const setPause = useCallback((v: boolean) => {
     if (wonRef.current || lostRef.current || startAtRef.current == null) return; // nothing running
-    const v = !pausedRef.current;
+    if (v === pausedRef.current) return; // already in that state
     pausedRef.current = v;
     setPaused(v);
     dirtyRef.current = true;
@@ -630,11 +631,12 @@ export default function PoolTable() {
       if (e.key === "Escape") {
         setShowSettings(false);
         setConfirmReset(false);
+        setPause(false);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showSettings, confirmReset]);
+  }, [showSettings, confirmReset, setPause]);
 
   // ---- The one animation loop: physics + sound + felt draw + render feed ----
   useEffect(() => {
@@ -952,9 +954,19 @@ export default function PoolTable() {
         className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-2 pl-[max(10px,env(safe-area-inset-left))] pr-[max(10px,env(safe-area-inset-right))]"
         style={{ height: HUD_TOP, paddingTop: "env(safe-area-inset-top)" }}
       >
-        {/* Center slot: idle hint before the first shot, otherwise the power meter */}
+        {/* Center slot: AI narration (in AI mode) / idle hint / power meter. Lives in the
+            reserved band ABOVE the felt so it never covers the table. */}
         <div className="flex min-w-0 flex-1 items-center justify-center gap-2">
-          {!aiming && shots === 0 ? (
+          {ai && aiPlan && !won && !lost ? (
+            <span className="pointer-events-none truncate text-[12px] font-semibold text-white/85 sm:text-[13px]" title={aiPlan.reason}>
+              <span aria-hidden="true">🤖 </span>
+              {aiPlan.viable ? (
+                <>Potting <b className="text-[#f3d888]">{aiPlan.country}</b> into <b className="text-[#f3d888]">{aiPlan.pocket}</b> - {Math.round(aiPlan.precision * 100)}% - power {Math.round(aiPlan.power * 100)}%</>
+              ) : (
+                <>Safety off <b className="text-[#f3d888]">{aiPlan.country}</b> - power {Math.round(aiPlan.power * 100)}%</>
+              )}
+            </span>
+          ) : !aiming && shots === 0 ? (
             <span className="truncate text-[12px] font-medium text-white/65 sm:text-[13px]">
               Pull back from the cue ball, aim, release
             </span>
@@ -1001,7 +1013,7 @@ export default function PoolTable() {
         </div>
 
         <div className="flex flex-1 shrink-0 items-center justify-end gap-1.5">
-          <IconBtn onClick={() => { sound.unlock(); setShowSettings(true); }} active={showSettings} title="Table surface">
+          <IconBtn onClick={() => { sound.unlock(); setPause(true); setShowSettings(true); }} active={showSettings} title="Settings (pauses the game)">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
           </IconBtn>
           <IconBtn onClick={toggleAI} active={ai} title="AI mode - let the computer play and learn its shots">
@@ -1017,41 +1029,8 @@ export default function PoolTable() {
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /></svg>
             )}
           </IconBtn>
-          <IconBtn onClick={togglePause} active={paused} title={paused ? "Resume" : "Pause"}>
-            {paused ? (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
-            ) : (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
-            )}
-          </IconBtn>
-          <IconBtn onClick={() => { sound.unlock(); setConfirmReset(true); }} title="New rack">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
-          </IconBtn>
         </div>
       </div>
-
-      {/* AI "thinking" banner: names the shot the computer is lining up, with its cut
-          precision + power, so you can learn the line before it strikes. */}
-      {ai && aiPlan && !won && !lost && (
-        <div
-          className="pointer-events-none absolute left-3 z-30 flex max-w-[58%] flex-col items-start gap-0.5 rounded-2xl bg-black/78 px-4 py-2 text-left text-xs font-semibold text-white shadow-lg ring-1 ring-white/15 backdrop-blur sm:max-w-[46%]"
-          style={{ top: HUD_TOP + 6 }}
-        >
-          <div className="flex items-center gap-1.5">
-            <span aria-hidden="true">🤖</span>
-            {aiPlan.viable ? (
-              <span>
-                Potting <b className="text-[#f3d888]">{aiPlan.country}</b> into <b className="text-[#f3d888]">{aiPlan.pocket}</b> - precision {Math.round(aiPlan.precision * 100)}% - power {Math.round(aiPlan.power * 100)}%
-              </span>
-            ) : (
-              <span>
-                Safety off <b className="text-[#f3d888]">{aiPlan.country}</b> - power {Math.round(aiPlan.power * 100)}%
-              </span>
-            )}
-          </div>
-          <div className="text-[11px] font-normal text-white/60">{aiPlan.reason}</div>
-        </div>
-      )}
 
       {/* Rotate hint on portrait (kept off the felt, in the top band area) */}
       {portrait && (
@@ -1070,7 +1049,7 @@ export default function PoolTable() {
           aria-modal="true"
           aria-label="Settings"
           className="absolute inset-0 z-40 overflow-y-auto bg-black/70 backdrop-blur-md"
-          onClick={() => setShowSettings(false)}
+          onClick={() => { setShowSettings(false); setPause(false); }}
         >
           <div className="flex min-h-full flex-col items-center justify-center gap-4 px-6 py-8">
           <div className="title-gold font-display text-3xl font-bold leading-tight sm:text-4xl">Settings</div>
@@ -1157,10 +1136,18 @@ export default function PoolTable() {
                 ))}
               </div>
             </div>
+
+            <button
+              onClick={() => { sound.unlock(); setShowSettings(false); setConfirmReset(true); }}
+              className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-white/10 px-4 py-2.5 font-display text-base font-bold text-white ring-1 ring-white/25 transition active:scale-95"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
+              New Rack
+            </button>
           </div>
 
           <button
-            onClick={() => setShowSettings(false)}
+            onClick={() => { setShowSettings(false); setPause(false); }}
             className="rounded-full bg-white/10 px-7 py-2.5 font-display text-base font-semibold text-white ring-1 ring-white/25 transition active:scale-95"
           >
             Done
@@ -1178,7 +1165,7 @@ export default function PoolTable() {
           </p>
           <div className="flex gap-3">
             <button
-              onClick={() => setConfirmReset(false)}
+              onClick={() => { setConfirmReset(false); setPause(false); }}
               className="rounded-full bg-white/10 px-7 py-3 font-display text-lg font-semibold text-white ring-1 ring-white/25 transition active:scale-95"
             >
               Cancel
@@ -1201,25 +1188,6 @@ export default function PoolTable() {
           className="cp-damage pointer-events-none fixed inset-0 z-50"
           style={{ background: "radial-gradient(ellipse at center, rgba(200,0,0,0) 30%, rgba(210,25,25,0.9) 100%)" }}
         />
-      )}
-
-      {/* Paused: a compact pill (NOT a full overlay) so the felt, ball positions, and the
-          AI's planned aim line stay visible - the whole point is to study them while paused. */}
-      {paused && !won && !lost && (
-        <div className="pointer-events-none absolute inset-x-0 z-30 flex justify-center px-4" style={{ bottom: HUD_BOTTOM + 12 }}>
-          <div className="pointer-events-auto flex items-center gap-3 rounded-full bg-black/70 px-4 py-2 text-white shadow-xl ring-1 ring-white/15 backdrop-blur-sm">
-            <span className="font-display title-gold text-lg font-bold leading-none">Paused</span>
-            <span className="text-xs font-semibold uppercase tracking-widest text-white/60">{fmtDur(durMs)}</span>
-            <button
-              onClick={togglePause}
-              aria-label="Resume"
-              className="flex items-center gap-1.5 rounded-full bg-gradient-to-b from-[#f3d888] to-[#c99b3c] px-4 py-1.5 font-display text-sm font-bold tracking-wide text-[#231a08] ring-1 ring-[#f3d888] transition active:scale-95"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>
-              Resume
-            </button>
-          </div>
-        </div>
       )}
 
       {/* Win overlay: confetti + Pool Champion */}
