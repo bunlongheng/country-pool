@@ -1,10 +1,10 @@
-# Country Pool
+# Pool
 
-Play pool where every ball is a glossy 3D country flag - a landscape-first billiards table rendered with WebGL.
+A landscape-first 3D WebGL pool game that also teaches categories: the balls can be country flags, colors, fruits, vegetables, or US state flags, and each one is named aloud when it drops.
 
-![Country Pool table with glossy 3D flag balls racked on emerald felt](docs/screenshots/rack.png)
+![Pool table with glossy 3D flag balls racked on emerald felt](docs/screenshots/rack.png)
 
-[![CI](https://github.com/bunlongheng/country-pool/actions/workflows/ci.yml/badge.svg)](https://github.com/bunlongheng/country-pool/actions/workflows/ci.yml)
+[![CI](https://github.com/bunlongheng/pool/actions/workflows/ci.yml/badge.svg)](https://github.com/bunlongheng/pool/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react)
@@ -24,6 +24,7 @@ Play pool where every ball is a glossy 3D country flag - a landscape-first billi
 - [Project layout](#project-layout)
 - [License](#license)
 
+- **Ball Type categories** (a learning game): Countries (194 flags), Colors, Fruits, Vegetables, US States (50 flags), or Random - each ball is named on screen and spoken aloud when it drops.
 - **AI mode**: a look-ahead computer player that clones the whole table, simulates every candidate shot to a full stop, refuses to scratch, and narrates each shot (target flag, pocket, straightness, reasoning) while it runs the rack in the fewest turns.
 - **Replay**: a World-Cup-style highlight reel of the rack - per-move chapters, a scrubber, slow-mo playback, and a score synced to every frame.
 - 15 object balls, each a real national flag on a glossy 3D WebGL sphere, plus a pearl-white cue ball.
@@ -105,8 +106,8 @@ sequenceDiagram
 ## Quick start
 
 ```bash
-git clone https://github.com/bunlongheng/country-pool.git
-cd country-pool
+git clone https://github.com/bunlongheng/pool.git
+cd pool
 npm install
 npm run dev
 ```
@@ -120,13 +121,14 @@ No environment variables required.
 ## Project layout
 
 ```
-country-pool/
+pool/
 ├── app/
 │   ├── components/
 │   │   ├── PoolTable.tsx    # game loop, felt canvas, drag-to-aim, HUD, settings, AI, replay
-│   │   ├── PoolBalls.tsx    # react-three-fiber glossy flag-ball overlay
+│   │   ├── PoolBalls.tsx    # r3f overlay: flag/state images, emoji + colour balls
 │   │   └── Studio.tsx       # r3f lighting + environment
 │   ├── data/
+│   │   ├── themes.ts        # ball categories: countries, colors, fruits, veggies, US states
 │   │   ├── countries.ts     # 194 countries (code, name, hue)
 │   │   └── surfaces.ts      # 10 cloth colours, 6 rail materials, 5 cue sticks
 │   ├── layout.tsx           # self-hosted fonts, metadata
@@ -137,7 +139,8 @@ country-pool/
 │   └── sound.ts             # Web Audio synth + theme playback
 ├── tests/pool.test.ts       # 19 node:test unit tests
 ├── public/
-│   ├── flags/               # 194 flag PNGs
+│   ├── flags/               # 194 country flag PNGs
+│   ├── state-flags/         # 50 US state flag PNGs
 │   └── theme.mp3            # looping background theme
 └── next.config.ts           # CSP + security headers
 ```

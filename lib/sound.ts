@@ -1,4 +1,4 @@
-// Sound engine for Country Pool. Everything is synthesised at runtime with Web Audio -
+// Sound engine for Pool. Everything is synthesised at runtime with Web Audio -
 // the sound EFFECTS (cue, clicks, rail, pocket, scratch, win) and the background music
 // (an original slow-jazz trio, one progression per stage). No audio files, no CDN, no
 // licensing; the CSP stays 'self'. Every call is wrapped so audio can never throw or
