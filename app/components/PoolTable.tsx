@@ -1034,7 +1034,7 @@ export default function PoolTable() {
           precision + power, so you can learn the line before it strikes. */}
       {ai && aiPlan && !won && !lost && (
         <div
-          className="pointer-events-none absolute left-1/2 z-30 flex max-w-[92%] -translate-x-1/2 flex-col items-center gap-0.5 rounded-2xl bg-black/78 px-4 py-2 text-center text-xs font-semibold text-white shadow-lg ring-1 ring-white/15 backdrop-blur"
+          className="pointer-events-none absolute left-3 z-30 flex max-w-[58%] flex-col items-start gap-0.5 rounded-2xl bg-black/78 px-4 py-2 text-left text-xs font-semibold text-white shadow-lg ring-1 ring-white/15 backdrop-blur sm:max-w-[46%]"
           style={{ top: HUD_TOP + 6 }}
         >
           <div className="flex items-center gap-1.5">
@@ -1537,9 +1537,21 @@ function PottedBall({ face, hue, name }: { face: Face; hue: number; name: string
       ) : face.kind === "emoji" ? (
         <span
           className="absolute inset-0 flex items-center justify-center text-[13px] leading-none"
-          style={{ background: `radial-gradient(circle at 38% 32%, hsl(${hue} 70% 80%), hsl(${hue} 60% 60%))` }}
+          style={{ background: `radial-gradient(circle at 38% 32%, hsl(${hue} 95% 78%), hsl(${hue} 90% 52%))` }}
         >
           {face.glyph}
+        </span>
+      ) : face.kind === "ball" ? (
+        <span className="absolute inset-0" style={{ background: face.stripe ? "#f3efe3" : face.color }}>
+          {face.stripe && <span className="absolute inset-x-0 top-1/2 h-1/2 -translate-y-1/2" style={{ background: face.color }} />}
+          <span className="absolute inset-0 flex items-center justify-center">
+            <span
+              className="flex items-center justify-center rounded-full bg-[#f6f3ea] font-bold leading-none text-black"
+              style={{ width: "56%", height: "56%", fontSize: face.n > 9 ? 7 : 9 }}
+            >
+              {face.n}
+            </span>
+          </span>
         </span>
       ) : (
         <span className="absolute inset-0" style={{ background: `hsl(${hue} 72% 50%)` }} />

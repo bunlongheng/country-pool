@@ -6,29 +6,35 @@ import { COUNTRIES } from "./countries";
 export type Face =
   | { kind: "image"; src: string } // a PNG under /public (flags, state flags)
   | { kind: "emoji"; glyph: string } // rendered to a canvas texture at runtime
+  | { kind: "ball"; n: number; color: string; stripe: boolean } // a real numbered pool ball
   | { kind: "color" }; // a solid glossy ball, colour taken from the item hue
 
 export type BallItem = { name: string; hue: number; face: Face };
 export type Theme = { key: string; label: string; icon: string; items: BallItem[] };
 
-// --- Colours: the simplest category - solid glossy balls that teach colour names. ---
-const COLORS: BallItem[] = [
-  { name: "Red", hue: 0 },
-  { name: "Orange", hue: 28 },
-  { name: "Amber", hue: 42 },
-  { name: "Yellow", hue: 55 },
-  { name: "Lime", hue: 90 },
-  { name: "Green", hue: 130 },
-  { name: "Teal", hue: 170 },
-  { name: "Cyan", hue: 190 },
-  { name: "Sky", hue: 205 },
-  { name: "Blue", hue: 222 },
-  { name: "Indigo", hue: 246 },
-  { name: "Violet", hue: 268 },
-  { name: "Purple", hue: 285 },
-  { name: "Magenta", hue: 312 },
-  { name: "Pink", hue: 335 },
-].map((c) => ({ name: c.name, hue: c.hue, face: { kind: "color" } as Face }));
+// --- Classic: a real 8-ball pool set - 1-7 solids, 8 black, 9-15 stripes, numbered. ---
+const BALL_SET = [
+  { n: 1, color: "#e6b400", hue: 48 },
+  { n: 2, color: "#1c3fa8", hue: 222 },
+  { n: 3, color: "#c81f1f", hue: 0 },
+  { n: 4, color: "#5f2a86", hue: 275 },
+  { n: 5, color: "#e0641b", hue: 24 },
+  { n: 6, color: "#1f7a44", hue: 145 },
+  { n: 7, color: "#8a1f2b", hue: 351 },
+  { n: 8, color: "#161616", hue: 0 },
+  { n: 9, color: "#e6b400", hue: 48 },
+  { n: 10, color: "#1c3fa8", hue: 222 },
+  { n: 11, color: "#c81f1f", hue: 0 },
+  { n: 12, color: "#5f2a86", hue: 275 },
+  { n: 13, color: "#e0641b", hue: 24 },
+  { n: 14, color: "#1f7a44", hue: 145 },
+  { n: 15, color: "#8a1f2b", hue: 351 },
+];
+const POOL_BALLS: BallItem[] = BALL_SET.map((b) => ({
+  name: String(b.n),
+  hue: b.hue,
+  face: { kind: "ball", n: b.n, color: b.color, stripe: b.n > 8 } as Face,
+}));
 
 // --- Fruits: emoji faces (no downloads), hue tuned to the fruit's real colour. ---
 const FRUITS: BallItem[] = [
@@ -37,15 +43,15 @@ const FRUITS: BallItem[] = [
   { name: "Orange", glyph: "🍊", hue: 28 },
   { name: "Grapes", glyph: "🍇", hue: 280 },
   { name: "Strawberry", glyph: "🍓", hue: 348 },
-  { name: "Watermelon", glyph: "🍉", hue: 135 },
+  { name: "Watermelon", glyph: "🍉", hue: 150 },
   { name: "Peach", glyph: "🍑", hue: 20 },
   { name: "Cherry", glyph: "🍒", hue: 352 },
   { name: "Pineapple", glyph: "🍍", hue: 48 },
   { name: "Mango", glyph: "🥭", hue: 33 },
-  { name: "Lemon", glyph: "🍋", hue: 54 },
-  { name: "Kiwi", glyph: "🥝", hue: 90 },
+  { name: "Lemon", glyph: "🍋", hue: 58 },
+  { name: "Kiwi", glyph: "🥝", hue: 108 },
   { name: "Coconut", glyph: "🥥", hue: 30 },
-  { name: "Pear", glyph: "🍐", hue: 80 },
+  { name: "Pear", glyph: "🍐", hue: 84 },
   { name: "Blueberry", glyph: "🫐", hue: 220 },
 ].map((f) => ({ name: f.name, hue: f.hue, face: { kind: "emoji", glyph: f.glyph } as Face }));
 
@@ -110,23 +116,25 @@ const STATE_ITEMS: BallItem[] = US_STATES.map((s, i) => ({
 }));
 
 export const THEMES: Theme[] = [
+  { key: "classic", label: "Classic", icon: "🎱", items: POOL_BALLS },
   { key: "country", label: "Countries", icon: "🌍", items: COUNTRY_ITEMS },
-  { key: "color", label: "Colors", icon: "🎨", items: COLORS },
   { key: "fruit", label: "Fruits", icon: "🍎", items: FRUITS },
   { key: "veg", label: "Veggies", icon: "🥦", items: VEGGIES },
   { key: "usstate", label: "US States", icon: "🏛️", items: STATE_ITEMS },
 ];
 
 export const RANDOM_KEY = "random";
-export const DEFAULT_THEME = "country";
+export const DEFAULT_THEME = "classic";
 
 export function themeByKey(key: string): Theme | undefined {
   return THEMES.find((t) => t.key === key);
 }
 
-// Pick n random items for a rack. "random" mixes across EVERY category for variety.
+// Pick n random items for a rack. "random" picks a whole RANDOM category each rack, so
+// every New Rack surprises you with a different category (countries, then fruits, etc.).
 export function pickItems(key: string, n: number): BallItem[] {
-  const pool = key === RANDOM_KEY ? THEMES.flatMap((t) => t.items) : themeByKey(key)?.items ?? COUNTRY_ITEMS;
+  const theme = key === RANDOM_KEY ? THEMES[Math.floor(Math.random() * THEMES.length)] : themeByKey(key);
+  const pool = theme?.items ?? COUNTRY_ITEMS;
   const idx = pool.map((_, i) => i);
   for (let i = idx.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));

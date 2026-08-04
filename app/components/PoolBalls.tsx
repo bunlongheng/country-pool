@@ -81,10 +81,10 @@ function emojiTexture(glyph: string, hue: number): THREE.CanvasTexture | null {
   c.width = c.height = S;
   const ctx = c.getContext("2d");
   if (!ctx) return null;
-  // Soft coloured backdrop (lighter centre) so the glyph reads on a glossy sphere.
+  // Vibrant coloured backdrop (lighter centre) so the glyph pops on a glossy sphere.
   const g = ctx.createRadialGradient(S * 0.4, S * 0.36, S * 0.1, S * 0.5, S * 0.5, S * 0.62);
-  g.addColorStop(0, `hsl(${hue} 70% 82%)`);
-  g.addColorStop(1, `hsl(${hue} 60% 62%)`);
+  g.addColorStop(0, `hsl(${hue} 95% 78%)`);
+  g.addColorStop(1, `hsl(${hue} 92% 52%)`);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, S, S);
   ctx.font = `${Math.round(S * 0.62)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
@@ -106,6 +106,55 @@ function EmojiBall({ glyph, hue, index, data }: { glyph: string; hue: number; in
     <mesh ref={ref} visible={false}>
       <primitive object={SPHERE} attach="geometry" />
       <meshPhysicalMaterial map={tex ?? undefined} {...glossy} />
+    </mesh>
+  );
+}
+
+// Draw a real pool ball: solid (1-8) or a white ball with a colour stripe (9-15), with
+// the number in a white disc centred on the front. Mapped onto the sphere so the stripe
+// wraps the equator and the number sits on the face - the classic look.
+function poolBallTexture(n: number, color: string, stripe: boolean): THREE.CanvasTexture | null {
+  if (typeof document === "undefined") return null;
+  const S = 256;
+  const c = document.createElement("canvas");
+  c.width = c.height = S;
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  if (stripe) {
+    ctx.fillStyle = "#f3efe3"; // ivory ball
+    ctx.fillRect(0, 0, S, S);
+    ctx.fillStyle = color; // the stripe band around the equator
+    ctx.fillRect(0, S * 0.3, S, S * 0.4);
+  } else {
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, S, S);
+  }
+  // White number disc on the face.
+  ctx.beginPath();
+  ctx.arc(S / 2, S / 2, S * 0.19, 0, Math.PI * 2);
+  ctx.fillStyle = "#f6f3ea";
+  ctx.fill();
+  ctx.fillStyle = "#161616";
+  ctx.font = `700 ${Math.round(S * (n > 9 ? 0.17 : 0.22))}px "Familjen Grotesk",-apple-system,system-ui,sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(n), S / 2, S * 0.53);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+// A real numbered pool ball (the Classic category).
+function BallNumberBall({ n, color, stripe, hue, index, data }: { n: number; color: string; stripe: boolean; hue: number; index: number; data: RefObject<BallRender[]> }) {
+  const ref = useRef<THREE.Mesh>(null);
+  const tex = useMemo(() => poolBallTexture(n, color, stripe), [n, color, stripe]);
+  const emissive = useMemo(() => new THREE.Color().setHSL(hue / 360, 0.7, 0.5), [hue]);
+  useBallFrame(ref, index, data);
+  return (
+    <mesh ref={ref} visible={false}>
+      <primitive object={SPHERE} attach="geometry" />
+      <meshPhysicalMaterial map={tex ?? undefined} {...glossy} emissive={emissive} emissiveIntensity={0.04} />
     </mesh>
   );
 }
@@ -155,6 +204,7 @@ export default function PoolBalls({
           if (s.isCue) return <CueBall key={i} index={i} data={data} />;
           if (s.face.kind === "image") return <ImageBall key={i} src={s.face.src} hue={s.hue} index={i} data={data} />;
           if (s.face.kind === "emoji") return <EmojiBall key={i} glyph={s.face.glyph} hue={s.hue} index={i} data={data} />;
+          if (s.face.kind === "ball") return <BallNumberBall key={i} n={s.face.n} color={s.face.color} stripe={s.face.stripe} hue={s.hue} index={i} data={data} />;
           return <ColorBall key={i} hue={s.hue} index={i} data={data} />;
         })}
       </Suspense>
