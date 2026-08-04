@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import dynamic from "next/dynamic";
-import { COUNTRIES } from "../data/countries";
+import { THEMES, RANDOM_KEY, DEFAULT_THEME, pickItems, type Face } from "../data/themes";
 import { RAIL_OPTIONS, railByKey, CLOTHS, clothFor, STICKS, stickByKey, type RailMaterial, type StickMaterial } from "../data/surfaces";
 import { sound } from "@/lib/sound";
 import {
@@ -83,24 +83,22 @@ function nearestPocket(x: number, y: number): number {
 
 type Transform = { ox: number; oy: number; scale: number };
 
-function pickCountries(n: number): number[] {
-  const pool = COUNTRIES.map((_, i) => i);
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
-  return pool.slice(0, n);
-}
-
-function buildRack(): { balls: Ball[]; skins: BallSkin[] } {
-  const balls = rack(pickCountries(OBJECT_BALLS));
-  const skins: BallSkin[] = balls.map((b) => ({
-    code: b.isCue ? "" : COUNTRIES[b.ci].code,
-    hue: b.isCue ? 0 : COUNTRIES[b.ci].hue,
-    isCue: b.isCue,
-  }));
+// Build a fresh rack in the chosen category. The rack's balls index into `items`, and
+// each skin carries the item's face + name so the rest of the game can look them up by
+// ball id (skins are index-aligned with balls; ball.id === its array index).
+function buildRack(themeKey: string): { balls: Ball[]; skins: BallSkin[] } {
+  const items = pickItems(themeKey, OBJECT_BALLS);
+  const balls = rack(items.map((_, i) => i));
+  const skins: BallSkin[] = balls.map((b) =>
+    b.isCue
+      ? { face: { kind: "color" }, hue: 0, name: "Cue", isCue: true }
+      : { face: items[b.ci].face, hue: items[b.ci].hue, name: items[b.ci].name, isCue: false },
+  );
   return { balls, skins };
 }
+
+const readBallType = () =>
+  (typeof window !== "undefined" ? window.localStorage?.getItem("cp-balltype") : null) || DEFAULT_THEME;
 
 // Ball-size option (scales physics + render together). Sizes run bigger for visibility.
 const BALL_SIZES = [
@@ -138,7 +136,10 @@ export default function PoolTable() {
     return f;
   });
 
-  const [game, setGame] = useState(() => buildRack());
+  const [ballType, setBallType] = useState(readBallType);
+  const ballTypeRef = useRef(ballType);
+  const [game, setGame] = useState(() => buildRack(readBallType()));
+  const skinsRef = useRef<BallSkin[]>(game.skins);
 
   const ballsRef = useRef<Ball[]>(game.balls);
   const renderRef = useRef<BallRender[]>([]);
@@ -206,8 +207,8 @@ export default function PoolTable() {
   }, [pickCloth, pickRail, pickStick]);
 
   const [potted, setPotted] = useState(0); // balls potted this rack (shown as "Score")
-  const [pottedCodes, setPottedCodes] = useState<{ id: number; code: string }[]>([]);
-  const pottedListRef = useRef<{ id: number; code: string }[]>([]); // pot-order, for the tray
+  const [pottedCodes, setPottedCodes] = useState<{ id: number; face: Face; hue: number; name: string }[]>([]);
+  const pottedListRef = useRef<{ id: number; face: Face; hue: number; name: string }[]>([]); // pot-order, for the tray
   const [shots, setShots] = useState(0);
   const shotsRef = useRef(0);
   const [deaths, setDeaths] = useState(0); // times the cue ball was scratched
@@ -241,7 +242,7 @@ export default function PoolTable() {
   const [replayPlaying, setReplayPlaying] = useState(true);
   const [replaySpeed, setReplaySpeed] = useState(0.5);
   const [segments, setSegments] = useState<{ shot: number; start: number; end: number }[]>([]); // one per move
-  const [replayTray, setReplayTray] = useState<{ id: number; code: string }[]>([]); // potted-so-far at the replay frame
+  const [replayTray, setReplayTray] = useState<{ id: number; face: Face; hue: number; name: string }[]>([]); // potted-so-far at the replay frame
   const replayTrayLenRef = useRef(-1); // last tray length pushed, to avoid per-frame re-renders
   const replayGuideRef = useRef<{ ox: number; oy: number; dirX: number; dirY: number; power: number } | null>(null); // the shot's original helper line
   // Pause/resume: freezes physics, the AI, and the timer (paused time is not counted).
@@ -288,7 +289,7 @@ export default function PoolTable() {
     setAiming(true);
     setPower(plan.power);
     setAiPlan({
-      country: COUNTRIES[plan.target.ci]?.name ?? "the ball",
+      country: skinsRef.current[plan.target.id]?.name ?? "the ball",
       pocket: pocketLabel(plan.pocket),
       precision: plan.straightness,
       power: plan.power,
@@ -317,7 +318,7 @@ export default function PoolTable() {
         moveLogRef.current.push({
           n: shotsRef.current,
           who: "AI",
-          target: COUNTRIES[plan.target.ci]?.name ?? "-",
+          target: skinsRef.current[plan.target.id]?.name ?? "-",
           pocket: pocketLabel(plan.pocket),
           precision: plan.viable ? plan.straightness : null,
           power: plan.power,
@@ -399,7 +400,7 @@ export default function PoolTable() {
           aimRef.current.dirY = plan.dirY;
           aimRef.current.power = plan.power;
           aimRef.current.active = true;
-          setAiPlan({ country: COUNTRIES[plan.target.ci]?.name ?? "the ball", pocket: pocketLabel(plan.pocket), precision: plan.straightness, power: plan.power, viable: plan.viable, reason: plan.reason });
+          setAiPlan({ country: skinsRef.current[plan.target.id]?.name ?? "the ball", pocket: pocketLabel(plan.pocket), precision: plan.straightness, power: plan.power, viable: plan.viable, reason: plan.reason });
         }
       }
     } else {
@@ -540,10 +541,25 @@ export default function PoolTable() {
     setReplayTray([]);
     replayTrayLenRef.current = -1;
     dirtyRef.current = true;
-    setGame(buildRack());
+    setGame(buildRack(ballTypeRef.current));
     // Keep auto-playing the new rack if AI mode is on.
     if (aiRef.current) aiTimerRef.current = setTimeout(() => aiShootRef.current(), 900);
   }, []);
+
+  // Switch the ball category (Countries / Colors / Fruits / Veggies / US States / Random).
+  // Persists the choice and racks fresh in the new category.
+  const pickBallType = useCallback(
+    (key: string) => {
+      sound.unlock();
+      setBallType(key);
+      ballTypeRef.current = key;
+      try {
+        window.localStorage?.setItem("cp-balltype", key);
+      } catch {}
+      resetGame();
+    },
+    [resetGame],
+  );
 
   const pickBallSize = useCallback(
     (factor: number) => {
@@ -629,6 +645,7 @@ export default function PoolTable() {
 
     const balls = game.balls;
     ballsRef.current = balls;
+    skinsRef.current = game.skins; // keep the name/face lookup aligned with the current rack
     renderRef.current = balls.map(() => ({ x: 0, y: 0, r: 1, dx: 1, dy: 0, dist: 0, sunk: false }));
     distRef.current = balls.map(() => 0);
 
@@ -706,9 +723,10 @@ export default function PoolTable() {
               setDamageKey((k) => k + 1); // FPS-style red screen flash
             } else {
               sound.pocket();
-              sound.announce(COUNTRIES[b.ci].name); // say the country that just dropped
+              const sk = skinsRef.current[b.id];
+              if (sk) sound.announce(sk.name); // say the item that just dropped (teaches the category)
               pottedRef.current += 1;
-              pottedListRef.current.push({ id: b.id, code: COUNTRIES[b.ci].code });
+              pottedListRef.current.push({ id: b.id, face: sk?.face ?? { kind: "color" }, hue: sk?.hue ?? 0, name: sk?.name ?? "" });
               setPotted(pottedRef.current); // update Score immediately
               setPottedCodes([...pottedListRef.current]); // roll the flag into the tray immediately
             }
@@ -970,8 +988,8 @@ export default function PoolTable() {
           {(replay ? replayTray : pottedCodes)
             .slice(-12)
             .reverse()
-            .map(({ id, code }) => (
-              <PottedBall key={id} code={code} />
+            .map(({ id, face, hue, name }) => (
+              <PottedBall key={id} face={face} hue={hue} name={name} />
             ))}
         </div>
 
@@ -1064,6 +1082,22 @@ export default function PoolTable() {
             >
               <span className="text-lg" aria-hidden="true">🎲</span> Randomize
             </button>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Ball Type</span>
+              <div className="grid grid-cols-3 gap-1.5">
+                {THEMES.map((t) => (
+                  <button key={t.key} onClick={() => pickBallType(t.key)} className={tabCls(t.key === ballType) + " flex-col !gap-1 px-1 py-2"}>
+                    <span className="text-lg leading-none" aria-hidden="true">{t.icon}</span>
+                    <span className="text-[10px] leading-tight">{t.label}</span>
+                  </button>
+                ))}
+                <button onClick={() => pickBallType(RANDOM_KEY)} className={tabCls(ballType === RANDOM_KEY) + " flex-col !gap-1 px-1 py-2"}>
+                  <span className="text-lg leading-none" aria-hidden="true">🎲</span>
+                  <span className="text-[10px] leading-tight">Random</span>
+                </button>
+              </div>
+            </div>
+
             <div className="flex flex-col gap-1.5">
               <span className="text-[11px] font-bold uppercase tracking-widest text-white/55">Ball Size</span>
               <div className="flex gap-2">
@@ -1486,16 +1520,30 @@ function Confetti() {
   );
 }
 
-// A potted country ball in the tray - a glossy sphere matching the WebGL balls on the
-// felt, that rolls in from the right when it drops (fresh mount = fresh CSS animation).
-function PottedBall({ code }: { code: string }) {
+// A potted ball in the tray - a glossy sphere matching the WebGL balls on the felt,
+// that rolls in from the right when it drops (fresh mount = fresh CSS animation). Renders
+// whatever face the ball wore: a flag/state image, a fruit/veg emoji, or a solid colour.
+function PottedBall({ face, hue, name }: { face: Face; hue: number; name: string }) {
   return (
     <span
       className="relative h-6 w-6 shrink-0 overflow-hidden rounded-full shadow-md ring-1 ring-black/50"
       style={{ animation: "cp-roll-in 0.7s cubic-bezier(.34,1.12,.5,1) both" }}
+      title={name}
+      aria-label={name}
     >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={`/flags/${code}.png`} alt="" className="absolute inset-0 h-full w-full object-cover" />
+      {face.kind === "image" ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={face.src} alt="" className="absolute inset-0 h-full w-full object-cover" />
+      ) : face.kind === "emoji" ? (
+        <span
+          className="absolute inset-0 flex items-center justify-center text-[13px] leading-none"
+          style={{ background: `radial-gradient(circle at 38% 32%, hsl(${hue} 70% 80%), hsl(${hue} 60% 60%))` }}
+        >
+          {face.glyph}
+        </span>
+      ) : (
+        <span className="absolute inset-0" style={{ background: `hsl(${hue} 72% 50%)` }} />
+      )}
       {/* Spherical highlight (top-left) + shading (bottom-right) = the 3D ball look. */}
       <span
         className="pointer-events-none absolute inset-0 rounded-full"
