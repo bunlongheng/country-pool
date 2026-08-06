@@ -36,7 +36,14 @@ const POOL_BALLS: BallItem[] = BALL_SET.map((b) => ({
   face: { kind: "ball", n: b.n, color: b.color, stripe: b.n > 8 } as Face,
 }));
 
-// --- Fruits: emoji faces (no downloads), hue tuned to the fruit's real colour. ---
+// Fruits/veg ship as pre-rendered PNGs (built from the emoji + the vibrant hue backdrop),
+// NOT live emoji. Reason: Apple Color Emoji is a bitmap (sbix) font, and iOS/Safari WebKit
+// drops it when a 2D canvas is uploaded as a WebGL texture - so on iPhone/iPad the fruit
+// never showed on the 3D balls (only the flat colour did). Image textures render fine on
+// WebKit, same as the country flags, so the fruit shows everywhere now. See public/fruits.
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+
+// --- Fruits: pre-rendered PNGs, hue tuned to the fruit's real colour. ---
 const FRUITS: BallItem[] = [
   { name: "Apple", glyph: "🍎", hue: 0 },
   { name: "Banana", glyph: "🍌", hue: 50 },
@@ -53,9 +60,9 @@ const FRUITS: BallItem[] = [
   { name: "Coconut", glyph: "🥥", hue: 30 },
   { name: "Pear", glyph: "🍐", hue: 84 },
   { name: "Blueberry", glyph: "🫐", hue: 220 },
-].map((f) => ({ name: f.name, hue: f.hue, face: { kind: "emoji", glyph: f.glyph } as Face }));
+].map((f) => ({ name: f.name, hue: f.hue, face: { kind: "image", src: `/fruits/${slug(f.name)}.png` } as Face }));
 
-// --- Vegetables: emoji faces. ---
+// --- Vegetables: pre-rendered PNGs. ---
 const VEGGIES: BallItem[] = [
   { name: "Carrot", glyph: "🥕", hue: 28 },
   { name: "Broccoli", glyph: "🥦", hue: 120 },
@@ -72,7 +79,7 @@ const VEGGIES: BallItem[] = [
   { name: "Leafy Greens", glyph: "🥬", hue: 110 },
   { name: "Hot Pepper", glyph: "🌶️", hue: 5 },
   { name: "Peas", glyph: "🫛", hue: 100 },
-].map((v) => ({ name: v.name, hue: v.hue, face: { kind: "emoji", glyph: v.glyph } as Face }));
+].map((v) => ({ name: v.name, hue: v.hue, face: { kind: "image", src: `/veggies/${slug(v.name)}.png` } as Face }));
 
 // --- Countries: the original theme (flag PNGs in /public/flags). ---
 const COUNTRY_ITEMS: BallItem[] = COUNTRIES.map((c) => ({
