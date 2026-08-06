@@ -755,14 +755,23 @@ export default function PoolTable() {
           frameShotRef.current.push(shotsRef.current); // tag this frame with its move number
         }
       }
-      // Transition moving -> stopped: settle the turn.
-      if (wasMoving && !moving && !replayRef.current) {
-        dirtyRef.current = true; // one final repaint of the resting table
+      // Self-healing safety net: once the table is at rest the cue must NEVER stay
+      // pocketed. The settle transition below fires only on the moving->stopped edge,
+      // which a single catch-up tick can skip entirely - e.g. a phone backgrounds the
+      // tab, then one large dt drives the cue from launch into a pocket within the same
+      // tick, so `moving` is never observed true and that edge never happens. Respawning
+      // on any idle frame guarantees the white ball comes back however it was potted. (#1)
+      if (!moving && !replayRef.current && !pausedRef.current) {
         const cue = balls.find((b) => b.isCue);
         if (cue && cue.sunk) {
           respotCue(balls); // head spot, nudged clear so it never overlaps another ball
           cueFlashRef.current = CUE_FLASH_DUR; // blink the respawned cue ball white
+          dirtyRef.current = true; // force a repaint so the respawned ball actually shows
         }
+      }
+      // Transition moving -> stopped: settle the turn.
+      if (wasMoving && !moving && !replayRef.current) {
+        dirtyRef.current = true; // one final repaint of the resting table
         setPotted(pottedRef.current);
         setPottedCodes([...pottedListRef.current]);
         setDeaths(deathsRef.current);

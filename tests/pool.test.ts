@@ -15,9 +15,11 @@ import {
   simulateShot,
   predictHit,
   rack,
+  respotCue,
   setBallSize,
   shoot,
   stepWorld,
+  POCKETS,
   type Ball,
 } from "../lib/pool.ts";
 
@@ -234,5 +236,55 @@ test("resizable balls still pot: cue driven into the top-left corner drops at ev
     } finally {
       setBallSize(1);
     }
+  }
+});
+
+test("respotCue always returns the pocketed cue to the table, clear of every other ball", () => {
+  const cueBall = cue({ id: 0, x: TABLE.w * 0.5, y: 50, sunk: true });
+  // Crowd the head spot so the direct placement is blocked and the search ring must run.
+  const blockers: Ball[] = [];
+  for (let k = 0; k < 6; k++) {
+    blockers.push(
+      cue({
+        id: k + 1,
+        ci: k,
+        isCue: false,
+        x: TABLE.w * 0.25 + (k % 3) * BALL_R,
+        y: TABLE.h / 2 + Math.floor(k / 3) * BALL_R,
+      }),
+    );
+  }
+  const balls = [cueBall, ...blockers];
+  respotCue(balls);
+  assert.equal(cueBall.sunk, false, "cue must no longer be sunk");
+  assert.ok(
+    cueBall.x >= 0 && cueBall.x <= TABLE.w && cueBall.y >= 0 && cueBall.y <= TABLE.h,
+    `cue must land on the table, got (${cueBall.x.toFixed(1)}, ${cueBall.y.toFixed(1)})`,
+  );
+  for (const b of blockers) {
+    assert.ok(
+      Math.hypot(b.x - cueBall.x, b.y - cueBall.y) >= BALL_R * 2,
+      `respotted cue must not overlap ball ${b.id}`,
+    );
+  }
+});
+
+test("a cue scratched into a pocket is always recoverable by respotCue (mobile catch-up scratch)", () => {
+  // A big catch-up dt (phone backgrounds then resumes) can drive the cue from launch
+  // into a pocket within a single step, so the UI never sees a 'moving' frame. Whatever
+  // the trigger, the pocketed cue must come back onto the felt. See issue #1.
+  const cueBall = cue({ id: 0, x: TABLE.w * 0.5, y: 50 });
+  const other = cue({ id: 1, ci: 2, isCue: false, x: 30, y: 80 });
+  const balls = [cueBall, other];
+  shoot(cueBall, POCKETS[0].x - cueBall.x, POCKETS[0].y - cueBall.y, 1); // fire at the corner
+  for (let i = 0; i < 1200 && !cueBall.sunk; i++) stepWorld(balls, 1 / 120);
+  assert.equal(cueBall.sunk, true, "cue should have scratched into the corner pocket");
+  respotCue(balls);
+  assert.equal(cueBall.sunk, false, "respot must bring the scratched cue back into play");
+  if (!other.sunk) {
+    assert.ok(
+      Math.hypot(other.x - cueBall.x, other.y - cueBall.y) >= BALL_R * 2,
+      "respotted cue must not overlap the remaining ball",
+    );
   }
 });
