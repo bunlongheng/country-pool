@@ -90,9 +90,9 @@ function emojiTexture(glyph: string, hue: number): THREE.CanvasTexture | null {
   // Keep the glyph small and centred: on a sphere the texture wraps 360deg, so only a
   // small patch around the texture centre actually faces the camera. A large glyph (the
   // old 0.62) smeared the fruit around the sides and left only its featureless middle
-  // facing front - so every ball looked like a plain colour. ~0.4 keeps the whole fruit
-  // on the front-facing cap where it reads clearly, like the numbered-ball disc.
-  ctx.font = `${Math.round(S * 0.4)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+  // facing front - so every ball looked like a plain colour. ~0.5 keeps the whole fruit
+  // on the front-facing cap where it reads clearly even on a small phone-scale ball.
+  ctx.font = `${Math.round(S * 0.5)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(glyph, S / 2, S * 0.5);
